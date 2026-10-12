@@ -5,12 +5,14 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "seed": "node seed.js"
+    "seed": "node seed.js",
+    "test": "node --test"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.0.0",
     "express": "^5.0.0",
+    "helmet": "^8.3.0",
     "mongoose": "^8.0.0"
   }
 }

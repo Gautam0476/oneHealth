@@ -15,6 +15,30 @@ The server serves the React build from `client/dist`. If MongoDB is not connecte
 
 For frontend-only development, run `npm run dev` inside `client`. Vite opens the React + Tailwind app at http://localhost:5173 and proxies `/api` to the backend on port 5000.
 
+## Configuration
+| Variable | Purpose |
+|---|---|
+| `MONGO_URI` | MongoDB connection string |
+| `PORT` | Express port, default `5000` |
+| `CORS_ORIGIN` | Comma-separated list of frontend origins allowed to call the API |
+| `RATE_LIMIT_MAX` | API requests allowed per IP every 15 minutes, default `300` |
+| `ADMIN_TOKEN` | Optional write token. When set, `POST /api/reports` must include `x-admin-token` |
+
+## Checks
+Run backend tests with:
+
+```bash
+cd server
+npm test
+```
+
+Run the frontend production build with:
+
+```bash
+cd client
+npm run build
+```
+
 ## What works
 - **Dashboard:** map with heatmap and livestock corridor toggles, early warnings, weekly stats, charts.
 - **CSV live upload:** use "Upload CSV Dataset" on the dashboard to load any compatible `.csv` dataset directly in the browser. The CSV must include cases/count/value and disease/signal/sector style headers, plus either a location column or latitude/longitude. The map, charts and alerts update immediately without saving the CSV to MongoDB. A ready demo file is included at `data/sample-one-health.csv`.
@@ -31,6 +55,13 @@ For frontend-only development, run `npm run dev` inside `client`. Vite opens the
 | `GET /api/alerts` | Cities with an unusual rise this week |
 | `GET /api/dashboard/stats` | This week and last week totals per sector |
 | `GET /api/health` | Quick check that the server is up |
+
+`GET /api/reports` validates sector filters and clamps `limit` to 1-500. `POST /api/reports` rejects invalid cases, coordinates and dates instead of silently storing bad values.
+
+## Security notes
+- The API uses security headers, a small JSON body limit and a per-IP rate limit.
+- CORS can be locked down with `CORS_ORIGIN` for deployed frontend URLs.
+- Set `ADMIN_TOKEN` before public deployment if report creation should be restricted.
 
 ## How an alert is raised
 For each city, the last 7 days are compared with the 23 days before. A city is flagged when it has at least 8 reports this week, runs at least 1.8 times its usual level, and its z-score is 2 or more. The anomaly engine then computes a confidence/risk score (0 to 100) from:
