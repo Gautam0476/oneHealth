@@ -1,15 +1,15 @@
-date,sector,disease,city,cases,latitude,longitude
-2026-09-13,human,Dengue,Delhi,2,28.61,77.21
-2026-09-14,animal,Foot-and-mouth,Lucknow,2,26.85,80.95
-2026-09-15,environment,Rainfall anomaly,Kolkata,1,22.57,88.36
-2026-09-16,human,Leptospirosis,Mumbai,2,19.08,72.88
-2026-09-17,animal,Brucellosis,Jaipur,1,26.91,75.79
-2026-09-18,human,Brucellosis,Jaipur,1,26.91,75.79
-2026-09-19,animal,Avian influenza,Guwahati,1,26.14,91.74
-2026-09-20,environment,Water contamination,Patna,2,25.61,85.14
-2026-09-21,human,Dengue,Chennai,1,13.08,80.27
-2026-09-22,animal,Anthrax,Bhopal,2,23.26,77.41
-2026-09-23,human,Rabies,Pune,1,18.52,73.86
+date,sector,disease,city,cases,latitude,longitude,species,symptoms,mortality,vaccination_status,confirmation_status,farm_id,block
+2026-09-13,human,Dengue,Delhi,2,28.61,77.21,,,,,suspected,,Central
+2026-09-14,animal,Foot-and-mouth,Lucknow,2,26.85,80.95,Buffalo,"lameness, mouth lesions",0,partial,suspected,LKO-DAIRY-11,Barabanki
+2026-09-15,environment,Rainfall anomaly,Kolkata,1,22.57,88.36,,,,,suspected,,Howrah
+2026-09-16,human,Leptospirosis,Mumbai,2,19.08,72.88,,,,,suspected,,Mumbai
+2026-09-17,animal,Brucellosis,Jaipur,1,26.91,75.79,Cattle,"abortion, fever, reduced milk",0,unvaccinated,suspected,JPR-DAIRY-14,Amber
+2026-09-18,human,Brucellosis,Jaipur,1,26.91,75.79,,,,,suspected,,Amber
+2026-09-19,animal,Avian influenza,Guwahati,1,26.14,91.74,Poultry,"sudden deaths, respiratory signs",2,unknown,suspected,GHY-POULTRY-08,Dispur
+2026-09-20,environment,Water contamination,Patna,2,25.61,85.14,,,,,suspected,,Patna
+2026-09-21,human,Dengue,Chennai,1,13.08,80.27,,,,,suspected,,Chennai
+2026-09-22,animal,Anthrax,Bhopal,2,23.26,77.41,Goat,"fever, sudden death",1,unvaccinated,lab_confirmed,BPL-GOAT-03,Huzur
+2026-09-23,human,Rabies,Pune,1,18.52,73.86,,,,,suspected,,Pune
 2026-09-24,environment,Heat index,Hyderabad,2,17.39,78.49
 2026-09-25,human,Dengue,Delhi,1,28.61,77.21
 2026-09-26,animal,Foot-and-mouth,Lucknow,2,26.85,80.95

@@ -68,6 +68,14 @@ svg text {
   font: 11px 'IBM Plex Sans', system-ui, sans-serif;
 }
 
+.hide-scrollbar {
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 .map-shell {
   background:
     radial-gradient(#1b2f48 1px, transparent 1px) 0 0 / 22px 22px,

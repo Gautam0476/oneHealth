@@ -1,0 +1,12 @@
+{
+  "name": "one-health-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "screenshots": "playwright test docs/screenshot-capture.spec.js --reporter=line"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0"
+  }
+}

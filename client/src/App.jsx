@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
-import { cityStats, computeAlerts as computeSharedAlerts } from '../../shared/anomalyEngine.mjs';
+import { ML_MODEL, cityStats, computeAlerts as computeSharedAlerts } from '../../shared/anomalyEngine.mjs';
 
 const SECTORS = {
   human: 'Human',
@@ -15,10 +15,32 @@ const COLORS = {
   alert: 'var(--alert)',
 };
 
+const AUTH_STORAGE_KEY = 'onehealth-auth';
+const can = (auth, permission) => auth?.user?.permissions?.includes(permission);
+
 const DISEASES = {
   human: ['Dengue', 'Leptospirosis', 'Rabies', 'Brucellosis'],
   animal: ['Avian influenza', 'Anthrax', 'Brucellosis', 'Foot-and-mouth'],
   environment: ['Heat index', 'Rainfall anomaly', 'Water contamination'],
+};
+
+const SPECIES_OPTIONS = ['Cattle', 'Buffalo', 'Goat', 'Sheep', 'Poultry', 'Pig', 'Mixed herd'];
+const VACCINATION_OPTIONS = {
+  unknown: 'Unknown',
+  vaccinated: 'Vaccinated',
+  partial: 'Partial',
+  unvaccinated: 'Unvaccinated',
+};
+const CONFIRMATION_OPTIONS = {
+  suspected: 'Suspected',
+  lab_confirmed: 'Lab confirmed',
+};
+const RESPONSE_STATUSES = {
+  new: 'New',
+  investigating: 'Investigating',
+  sample_collected: 'Sample collected',
+  contained: 'Contained',
+  resolved: 'Resolved',
 };
 
 const CITY_COORDS = {
@@ -159,12 +181,59 @@ const randFactory = () => {
 };
 
 const pick = (items, rnd) => items[Math.floor(rnd() * items.length)];
+const cleanOptional = (value) => String(value ?? '').trim();
+const normEnum = (value, allowed, fallback) => {
+  const key = norm(value);
+  if (allowed.includes(key)) return key;
+  if (/full|yes|done|complete/.test(key) && allowed.includes('vaccinated')) return 'vaccinated';
+  if (/part/.test(key) && allowed.includes('partial')) return 'partial';
+  if (/no|not|none|unvaccinated/.test(key) && allowed.includes('unvaccinated')) return 'unvaccinated';
+  if (/lab|confirm|positive/.test(key) && allowed.includes('lab_confirmed')) return 'lab_confirmed';
+  if (/suspect|probable/.test(key) && allowed.includes('suspected')) return 'suspected';
+  return fallback;
+};
+
+function animalDetails(seed = '') {
+  let hash = 0;
+  const text = seed || 'animal';
+  for (let index = 0; index < text.length; index += 1) hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+  const optionIndex = hash % SPECIES_OPTIONS.length;
+  return {
+    species: SPECIES_OPTIONS[optionIndex],
+    symptoms: ['fever', 'reduced milk', 'lameness', 'respiratory signs'][optionIndex % 4],
+    mortality: optionIndex % 3 === 0 ? 1 : 0,
+    vaccinationStatus: optionIndex % 2 === 0 ? 'partial' : 'unvaccinated',
+    confirmationStatus: optionIndex % 5 === 0 ? 'lab_confirmed' : 'suspected',
+    farmId: `FARM-${100 + optionIndex}`,
+    block: ['Amber', 'Sanganer', 'Dispur', 'Barabanki', 'Howrah'][optionIndex % 5],
+  };
+}
+
+function reportMeta(row) {
+  const parts = [];
+  if (row.species) parts.push(row.species);
+  if (row.mortality) parts.push(`${row.mortality} deaths`);
+  if (row.vaccinationStatus && row.vaccinationStatus !== 'unknown') parts.push(VACCINATION_OPTIONS[row.vaccinationStatus] || row.vaccinationStatus);
+  if (row.confirmationStatus === 'lab_confirmed') parts.push('Lab confirmed');
+  if (row.block) parts.push(row.block);
+  return parts.join(' | ');
+}
 
 function createDemoReports() {
   const rnd = randFactory();
   const reports = [];
   let id = 1;
-  const add = (day, loc, sec, dis, n) => reports.push({ id: id++, day, loc, sec, dis, n });
+  const add = (day, loc, sec, dis, n, meta = {}) =>
+    reports.push({
+      id: id++,
+      day,
+      loc,
+      sec,
+      dis,
+      n,
+      ...(sec === 'animal' ? animalDetails(`${loc}-${dis}-${day}`) : {}),
+      ...meta,
+    });
 
   for (let day = 29; day >= 0; day -= 1) {
     for (let k = 0; k < 5; k += 1) {
@@ -174,12 +243,28 @@ function createDemoReports() {
   }
 
   for (let day = 5; day >= 0; day -= 1) {
-    add(day, 'Jaipur', 'animal', 'Brucellosis', 3);
+    add(day, 'Jaipur', 'animal', 'Brucellosis', 3, {
+      species: 'Cattle',
+      symptoms: 'abortion, fever, reduced milk',
+      mortality: day % 3 === 0 ? 1 : 0,
+      vaccinationStatus: 'unvaccinated',
+      confirmationStatus: day <= 2 ? 'lab_confirmed' : 'suspected',
+      farmId: 'JPR-DAIRY-14',
+      block: 'Amber',
+    });
     add(day, 'Jaipur', 'human', 'Brucellosis', 2);
   }
 
   for (let day = 3; day >= 0; day -= 1) {
-    add(day, 'Guwahati', 'animal', 'Avian influenza', 3);
+    add(day, 'Guwahati', 'animal', 'Avian influenza', 3, {
+      species: 'Poultry',
+      symptoms: 'sudden deaths, respiratory signs',
+      mortality: 2,
+      vaccinationStatus: 'unknown',
+      confirmationStatus: day <= 1 ? 'lab_confirmed' : 'suspected',
+      farmId: 'GHY-POULTRY-08',
+      block: 'Dispur',
+    });
   }
 
   return reports;
@@ -303,6 +388,14 @@ function parseCases(value) {
   return Math.max(1, Math.min(500, Math.round(number)));
 }
 
+function parseOptionalCount(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return 0;
+  const number = Number(raw.replace(/[^0-9.-]/g, ''));
+  if (!Number.isFinite(number) || number < 0) return 0;
+  return Math.max(0, Math.min(500, Math.round(number)));
+}
+
 function parseDateValue(value) {
   const raw = String(value ?? '').trim();
   if (!raw) return null;
@@ -346,6 +439,13 @@ const CSV_HEADERS = {
   date: ['date', 'report_date', 'onset_date', 'created_at', 'updated_at', 'observation_date', 'year', 'month'],
   lat: ['lat', 'latitude'],
   lon: ['lon', 'lng', 'long', 'longitude'],
+  species: ['species', 'animal_species', 'livestock_species', 'animal_type'],
+  symptoms: ['symptoms', 'clinical_signs', 'signs', 'remarks', 'notes'],
+  mortality: ['mortality', 'deaths', 'dead', 'fatalities', 'animal_deaths'],
+  vaccinationStatus: ['vaccination_status', 'vaccinated', 'vaccine_status', 'immunization_status'],
+  confirmationStatus: ['confirmation_status', 'lab_status', 'test_status', 'confirmed_status', 'case_status'],
+  farmId: ['farm_id', 'farm', 'premise_id', 'holding_id', 'owner_id'],
+  block: ['block', 'tehsil', 'taluka', 'village', 'panchayat'],
 };
 
 function validateCsvHeaders({ locationColumns, diseaseIndex, sectorIndex, caseIndex, latIndex, lonIndex }) {
@@ -371,6 +471,13 @@ function parseUploadedCsv(text) {
   const dateIndex = findColumn(headers, CSV_HEADERS.date);
   const latIndex = findColumn(headers, CSV_HEADERS.lat);
   const lonIndex = findColumn(headers, CSV_HEADERS.lon);
+  const speciesIndex = findColumn(headers, CSV_HEADERS.species);
+  const symptomsIndex = findColumn(headers, CSV_HEADERS.symptoms);
+  const mortalityIndex = findColumn(headers, CSV_HEADERS.mortality);
+  const vaccinationIndex = findColumn(headers, CSV_HEADERS.vaccinationStatus);
+  const confirmationIndex = findColumn(headers, CSV_HEADERS.confirmationStatus);
+  const farmIndex = findColumn(headers, CSV_HEADERS.farmId);
+  const blockIndex = findColumn(headers, CSV_HEADERS.block);
   const headerError = validateCsvHeaders({ locationColumns, diseaseIndex, sectorIndex, caseIndex, latIndex, lonIndex });
   if (headerError) return { reports: [], skipped: body.length, error: headerError };
 
@@ -402,6 +509,7 @@ function parseUploadedCsv(text) {
     const disease = readCell(row, diseaseIndex) || 'Imported CSV signal';
     const sector = detectSector(row, sectorIndex, disease);
     const cases = parseCases(readCell(row, caseIndex));
+    const mortality = parseOptionalCount(readCell(row, mortalityIndex));
     const latestDay = maxDate ? new Date(maxDate).setHours(0, 0, 0, 0) : null;
     const rowDay = date ? new Date(date).setHours(0, 0, 0, 0) : null;
     const day = rowDay && latestDay ? Math.max(0, Math.round((latestDay - rowDay) / 864e5)) : index % 30;
@@ -419,6 +527,13 @@ function parseUploadedCsv(text) {
       sec: sector,
       dis: disease.slice(0, 60),
       n: cases,
+      species: cleanOptional(readCell(row, speciesIndex)) || undefined,
+      symptoms: cleanOptional(readCell(row, symptomsIndex)) || undefined,
+      mortality,
+      vaccinationStatus: normEnum(readCell(row, vaccinationIndex), Object.keys(VACCINATION_OPTIONS), 'unknown'),
+      confirmationStatus: normEnum(readCell(row, confirmationIndex), Object.keys(CONFIRMATION_OPTIONS), 'suspected'),
+      farmId: cleanOptional(readCell(row, farmIndex)) || undefined,
+      block: cleanOptional(readCell(row, blockIndex)) || undefined,
     });
   });
 
@@ -433,8 +548,8 @@ function parseUploadedCsv(text) {
   return { reports, skipped };
 }
 
-function computeAlerts(reports) {
-  return computeSharedAlerts(reports, { env: ENV, corridors: CORRIDORS });
+function computeAlerts(reports, envByCity = ENV) {
+  return computeSharedAlerts(reports, { env: envByCity, corridors: CORRIDORS });
 }
 
 const mapX = (lon) => (lon - 67) * 14;
@@ -446,7 +561,7 @@ const locationPoint = (name) => {
 
 function Button({ children, variant = 'solid', className = '', ...props }) {
   const base =
-    'inline-flex cursor-pointer items-center justify-center rounded-full px-[18px] py-2.5 text-sm font-semibold outline-none transition focus-visible:ring-2 focus-visible:ring-env focus-visible:ring-offset-2 focus-visible:ring-offset-bg';
+    'inline-flex cursor-pointer items-center justify-center rounded-full px-[18px] py-2.5 text-sm font-semibold outline-none transition focus-visible:ring-2 focus-visible:ring-env focus-visible:ring-offset-2 focus-visible:ring-offset-bg disabled:cursor-not-allowed disabled:opacity-55';
   const styles =
     variant === 'ghost'
       ? 'border border-ink bg-transparent text-ink hover:bg-ink/5'
@@ -476,7 +591,10 @@ function Tag({ sector }) {
   );
 }
 
-function Header({ page, setPage, alertCount, live, empty, uploadInfo }) {
+function Header({ page, setPage, alertCount, live, empty, uploadInfo, auth, onLogin, onLogout }) {
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [busy, setBusy] = useState(false);
   const liveText = uploadInfo ? 'CSV live feed' : live ? (empty ? 'Database empty, showing demo data' : 'Connected to database') : 'Demo data';
   const items = [
     ['dashboard', 'Dashboard'],
@@ -484,9 +602,16 @@ function Header({ page, setPage, alertCount, live, empty, uploadInfo }) {
     ['alerts', 'Alerts'],
     ['pipeline', 'Data pipeline'],
   ];
+  const submitLogin = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    const ok = await onLogin(loginForm.username, loginForm.password);
+    setBusy(false);
+    if (ok) setLoginOpen(false);
+  };
 
   return (
-    <header className="flex flex-wrap items-center gap-7 border-b border-line px-4 py-3.5 sm:px-8 lg:px-11">
+    <header className="relative flex flex-wrap items-center gap-4 border-b border-line px-4 py-3.5 sm:px-8 lg:flex-nowrap lg:gap-7 lg:px-11">
       <div className="flex items-center gap-2.5 font-display text-[22px] font-extrabold text-ink">
         <span className="grid size-5 grid-cols-2 gap-0.5">
           <span className="rounded-full bg-human" />
@@ -497,7 +622,7 @@ function Header({ page, setPage, alertCount, live, empty, uploadInfo }) {
         OneHealth
       </div>
 
-      <nav className="flex flex-1 gap-1 overflow-x-auto">
+      <nav className="hide-scrollbar order-3 flex w-full min-w-0 gap-1 overflow-x-auto lg:order-none lg:w-auto lg:flex-1">
         {items.map(([key, label]) => (
           <button
             key={key}
@@ -515,9 +640,57 @@ function Header({ page, setPage, alertCount, live, empty, uploadInfo }) {
         ))}
       </nav>
 
-      <div className="hidden items-center gap-2 text-sm text-mute md:flex">
+      <div className="ml-auto hidden shrink-0 items-center gap-2 text-sm text-mute md:flex lg:ml-0">
         <span className="live-dot size-2 rounded-full bg-env" />
         {liveText}
+      </div>
+
+      <div className="relative ml-auto flex shrink-0 items-center gap-2 lg:ml-0">
+        {auth ? (
+          <>
+            <span className="rounded-full border border-line px-3 py-1 text-xs font-semibold uppercase text-mute">
+              {auth.user.role}
+            </span>
+            <Button variant="ghost" className="px-3 py-1.5" onClick={onLogout}>
+              Sign out
+            </Button>
+          </>
+        ) : loginOpen ? (
+          <>
+            <Button variant="ghost" className="px-3 py-1.5" onClick={() => setLoginOpen(false)}>
+              Close
+            </Button>
+            <form
+              className="absolute right-0 top-[calc(100%+0.75rem)] z-[1200] grid w-[min(22rem,calc(100vw-2rem))] gap-3 rounded-tool border border-line bg-card p-4 shadow-soft"
+              onSubmit={submitLogin}
+            >
+              <Label text="Username">
+                <Input
+                  autoComplete="username"
+                  placeholder="analyst"
+                  value={loginForm.username}
+                  onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))}
+                />
+              </Label>
+              <Label text="Password">
+                <Input
+                  autoComplete="current-password"
+                  placeholder="analyst123"
+                  type="password"
+                  value={loginForm.password}
+                  onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))}
+                />
+              </Label>
+              <Button className="w-full" disabled={busy || !loginForm.username || !loginForm.password}>
+                Login
+              </Button>
+            </form>
+          </>
+        ) : (
+          <Button variant="ghost" className="px-3 py-1.5" onClick={() => setLoginOpen(true)}>
+            Login
+          </Button>
+        )}
       </div>
     </header>
   );
@@ -537,7 +710,14 @@ function Top({ title, children, action }) {
   );
 }
 
-function AlertItem({ alert, compact = false }) {
+function validationClass(status) {
+  if (status === 'validated') return 'border-env text-env';
+  if (status === 'review') return 'border-animal text-animal';
+  return 'border-alert text-alert';
+}
+
+function AlertItem({ alert, compact = false, auth, onValidate, onRespond, envByCity = ENV }) {
+  const validation = alert.manualValidation || alert.validation;
   return (
     <div className="flex items-start gap-4 border-t border-line py-4">
       <div className={`w-[76px] shrink-0 font-display text-[34px] font-extrabold leading-none ${alert.severity === 'high' ? 'text-alert' : 'text-animal'}`}>
@@ -550,20 +730,85 @@ function AlertItem({ alert, compact = false }) {
           Confidence {alert.confidence}%. {alert.severity === 'high' ? 'Investigate now.' : 'Keep watching.'}
         </small>
         <div className="mt-2 flex flex-wrap gap-1.5">
+          {validation ? (
+            <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${validationClass(validation.status)}`}>
+              {validation.label || validation.status}
+            </span>
+          ) : null}
           {alert.drivers.map((driver) => (
             <span key={driver} className="rounded-full border border-line px-2 py-0.5 text-xs text-mute">
               {driver}
             </span>
           ))}
         </div>
-        {!compact ? <ActionList alert={alert} /> : null}
+        {!compact ? (
+          <>
+            <ValidationPanel alert={alert} auth={auth} onValidate={onValidate} onRespond={onRespond} />
+            <ActionList alert={alert} envByCity={envByCity} />
+          </>
+        ) : null}
       </div>
     </div>
   );
 }
 
-function ActionList({ alert }) {
-  const env = ENV[alert.loc] ?? [0, 0];
+function ValidationPanel({ alert, auth, onValidate, onRespond }) {
+  const validation = alert.validation;
+  const manual = alert.manualValidation;
+  const responseStatus = manual?.responseStatus || 'new';
+
+  return (
+    <div className="mt-3 rounded-tool border border-line bg-card p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <b className="font-display">Validation score {validation.score}/100</b>
+          <div className="text-[13px] text-mute">
+            {validation.method} via {validation.modelVersion}. {validation.nextStep}.
+          </div>
+        </div>
+        {manual ? (
+          <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${validationClass(manual.status)}`}>
+            {manual.status} by {manual.by} | {RESPONSE_STATUSES[responseStatus] || responseStatus}
+          </span>
+        ) : null}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {validation.checks.map((check) => (
+          <div key={check.label} className="rounded-[8px] border border-line p-2 text-[13px]">
+            <b className={check.passed ? 'text-env' : 'text-mute'}>{check.passed ? 'Pass' : 'Review'}: {check.label}</b>
+            <div className="text-mute">{check.detail}</div>
+          </div>
+        ))}
+      </div>
+      {can(auth, 'alerts:validate') ? (
+        <>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {['validated', 'review', 'dismissed'].map((status) => (
+              <Button key={status} variant={status === 'validated' ? 'solid' : 'ghost'} className="px-3 py-1.5" onClick={() => onValidate(alert.loc, status)}>
+                Mark {status}
+              </Button>
+            ))}
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+            <Select value={responseStatus} aria-label="Field response status" onChange={(event) => onRespond(alert.loc, event.target.value)}>
+              {Object.entries(RESPONSE_STATUSES).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </Select>
+            <Button variant="ghost" className="px-3 py-1.5" onClick={() => onRespond(alert.loc, responseStatus)}>
+              Update response
+            </Button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function ActionList({ alert, envByCity = ENV }) {
+  const env = envByCity[alert.loc] ?? [0, 0];
   const actions = [
     `Send a vet team to ${alert.loc} to test animals for ${alert.disease}`,
     alert.corridors.length
@@ -621,8 +866,9 @@ function LeafletDiseaseMap({ reports, alerts, layers, mapFilters, selectedLocati
       ],
       maxBoundsViscosity: 0.6,
     });
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors',
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+      attribution: 'Tiles &copy; Esri',
+      maxZoom: 16,
     }).addTo(map);
     layerRef.current = L.layerGroup().addTo(map);
     mapRef.current = map;
@@ -699,7 +945,7 @@ function LeafletDiseaseMap({ reports, alerts, layers, mapFilters, selectedLocati
     }
   }, [alertByCity, layers, points, selectedLocation, setSelectedLocation]);
 
-  return <div ref={nodeRef} className="onehealth-map flex-1 overflow-hidden rounded-[16px]" aria-label="Interactive OpenStreetMap disease report map" />;
+  return <div ref={nodeRef} className="onehealth-map flex-1 overflow-hidden rounded-[16px]" aria-label="Interactive disease report map" />;
 }
 
 function MapPanel({ reports, alerts, layers, setLayers, mapFilters, setMapFilters, selectedLocation, setSelectedLocation }) {
@@ -722,7 +968,7 @@ function MapPanel({ reports, alerts, layers, setLayers, mapFilters, setMapFilter
   return (
     <div className="map-shell flex min-h-full flex-col rounded-[24px] p-4 text-[#dbe6f2] sm:p-6">
       <h2 className="font-display text-[22px] font-bold text-white">Live disease map</h2>
-      <div className="mb-2 text-sm text-[#8fa4bd]">OpenStreetMap with dynamic CSV locations. Bubble size is this week's reports.</div>
+      <div className="mb-2 text-sm text-[#8fa4bd]">Dark map with dynamic CSV locations. Bubble size is this week's reports.</div>
       <div className="mb-2 flex flex-wrap gap-2">
         {[
           ['heat', 'Heatmap'],
@@ -940,6 +1186,11 @@ function Dashboard({
     return `${current >= previous ? 'Up' : 'Down'} ${Math.abs(current - previous)} from last week`;
   };
   const count = alerts.length;
+  const animalWeek = week('animal');
+  const livestockDeaths = animalWeek.reduce((sum, row) => sum + (Number(row.mortality) || 0), 0);
+  const unvaccinatedHerds = animalWeek.filter((row) => row.vaccinationStatus === 'unvaccinated').length;
+  const labConfirmedAnimal = animalWeek.filter((row) => row.confirmationStatus === 'lab_confirmed').length;
+  const speciesCount = new Set(animalWeek.map((row) => row.species).filter(Boolean)).size;
 
   return (
     <>
@@ -958,7 +1209,7 @@ function Dashboard({
       {uploadInfo ? (
         <div className="mb-5 rounded-tool border border-env/40 bg-card p-4 text-sm text-ink">
           <b className="font-display">CSV live upload active:</b> {uploadInfo.rows.toLocaleString('en-IN')} rows from {uploadInfo.name} are powering the map,
-          charts and alerts in this browser only. MongoDB was not touched.
+          charts and alerts {uploadInfo.saved ? 'from MongoDB.' : 'in this browser only. MongoDB was not touched.'}
           {uploadInfo.skipped ? <span className="text-mute"> {uploadInfo.skipped.toLocaleString('en-IN')} older or blank rows were ignored.</span> : null}
         </div>
       ) : null}
@@ -991,6 +1242,22 @@ function Dashboard({
         <StatCard label="Active alerts" value={count} color={COLORS.alert} note="Unusual rise detected" />
       </div>
 
+      <div className="mb-9 grid gap-4 border-t border-line pt-4 sm:grid-cols-3">
+        <div>
+          <span className="text-[13.5px] text-mute">Livestock mortality this week</span>
+          <b className="block font-display text-[34px] leading-tight text-ink">{livestockDeaths}</b>
+        </div>
+        <div>
+          <span className="text-[13.5px] text-mute">Unvaccinated animal reports</span>
+          <b className="block font-display text-[34px] leading-tight text-ink">{unvaccinatedHerds}</b>
+        </div>
+        <div>
+          <span className="text-[13.5px] text-mute">Species under surveillance</span>
+          <b className="block font-display text-[34px] leading-tight text-ink">{speciesCount}</b>
+          <span className="text-[13.5px] text-mute">{labConfirmedAnimal} lab-confirmed animal signals</span>
+        </div>
+      </div>
+
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] xl:gap-11">
         <section>
           <h2 className="font-display text-[22px] font-bold">Reports over time</h2>
@@ -1014,9 +1281,9 @@ function Dashboard({
 
       <p className="mt-11 border-t border-line pt-3 text-[13px] text-mute">
         {uploadInfo
-          ? 'Reports come from the uploaded CSV in this browser. Climate and movement corridor figures are still sample data.'
+          ? 'Reports come from the uploaded CSV in this browser. Animal species, mortality, vaccination and lab status are preserved when present. Climate and movement corridor figures are still sample data.'
           : live && !empty
-            ? 'Reports come from the database. Climate and movement corridor figures are still sample data.'
+            ? 'Reports come from the database with Pashudhan fields when provided. Climate and movement corridor figures are still sample data.'
             : 'All numbers are sample data for demonstration.'}{' '}
         Alerts are signals to investigate, not confirmed outbreaks.
       </p>
@@ -1024,22 +1291,30 @@ function Dashboard({
   );
 }
 
-function ReportsPage({ reports, setReports, filters, setFilters, live, reload, showToast }) {
+function ReportsPage({ reports, setReports, filters, setFilters, live, reload, showToast, auth }) {
   const locationOptions = useMemo(
     () => [...new Set([...getReportLocations(reports), ...LOCATIONS.map(([loc]) => loc)])].sort((a, b) => a.localeCompare(b)),
     [reports],
   );
   const [form, setForm] = useState({
-    sector: 'human',
-    disease: DISEASES.human[0],
+    sector: 'animal',
+    disease: DISEASES.animal[0],
     location: LOCATIONS[0][0],
     cases: 1,
+    species: SPECIES_OPTIONS[0],
+    symptoms: '',
+    mortality: 0,
+    vaccinationStatus: 'unknown',
+    confirmationStatus: 'suspected',
+    farmId: '',
+    block: '',
   });
 
   const rows = reports
     .filter((row) => (filters.sec === 'all' || row.sec === filters.sec) && (filters.loc === 'all' || row.loc === filters.loc))
     .sort((a, b) => a.day - b.day || b.id - a.id)
     .slice(0, 40);
+  const canWrite = !live || can(auth, 'reports:write');
 
   const updateForm = (patch) => {
     setForm((current) => {
@@ -1051,11 +1326,19 @@ function ReportsPage({ reports, setReports, filters, setFilters, live, reload, s
 
   const saveReport = async () => {
     const cases = Math.max(1, Math.min(500, Math.round(Number(form.cases) || 1)));
+    const mortality = Math.max(0, Math.min(500, Math.round(Number(form.mortality) || 0)));
     const body = {
       disease: form.disease,
       sector: form.sector,
       location: form.location,
       cases,
+      species: form.sector === 'animal' ? cleanOptional(form.species) : undefined,
+      symptoms: cleanOptional(form.symptoms) || undefined,
+      mortality,
+      vaccinationStatus: form.sector === 'animal' ? form.vaccinationStatus : 'unknown',
+      confirmationStatus: form.confirmationStatus,
+      farmId: cleanOptional(form.farmId) || undefined,
+      block: cleanOptional(form.block) || undefined,
     };
     const coords = getKnownCoords(body.location);
     if (coords) {
@@ -1065,17 +1348,38 @@ function ReportsPage({ reports, setReports, filters, setFilters, live, reload, s
 
     if (!live) {
       setReports((current) => [
-        { id: Date.now(), day: 0, loc: body.location, lat: coords?.[0], lon: coords?.[1], sec: body.sector, dis: body.disease, n: cases },
+        {
+          id: Date.now(),
+          day: 0,
+          loc: body.location,
+          lat: coords?.[0],
+          lon: coords?.[1],
+          sec: body.sector,
+          dis: body.disease,
+          n: cases,
+          species: body.species,
+          symptoms: body.symptoms,
+          mortality: body.mortality,
+          vaccinationStatus: body.vaccinationStatus,
+          confirmationStatus: body.confirmationStatus,
+          farmId: body.farmId,
+          block: body.block,
+        },
         ...current,
       ]);
       showToast('Saved in demo mode only');
       return;
     }
 
+    if (!can(auth, 'reports:write')) {
+      showToast('Login as analyst or admin to save live reports');
+      return;
+    }
+
     try {
       const response = await fetch('/api/reports', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` },
         body: JSON.stringify(body),
       });
       if (!response.ok) throw new Error('save failed');
@@ -1092,8 +1396,10 @@ function ReportsPage({ reports, setReports, filters, setFilters, live, reload, s
 
       <section className="mb-4 rounded-tool border border-line bg-card p-4">
         <h3 className="font-display text-lg font-bold">New report</h3>
-        <div className="mb-3 text-sm text-mute">It appears on the dashboard right away</div>
-        <div className="grid items-end gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="mb-3 text-sm text-mute">
+          {live && !canWrite ? 'Live database writes require analyst or admin login' : 'It appears on the dashboard right away'}
+        </div>
+        <div className="grid items-end gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
           <Label text="Sector">
             <Select value={form.sector} onChange={(event) => updateForm({ sector: event.target.value })}>
               {Object.entries(SECTORS).map(([key, label]) => (
@@ -1120,7 +1426,48 @@ function ReportsPage({ reports, setReports, filters, setFilters, live, reload, s
           <Label text="Number of cases">
             <Input type="number" min="1" value={form.cases} onChange={(event) => updateForm({ cases: event.target.value })} />
           </Label>
-          <Button className="w-full" onClick={saveReport}>
+          {form.sector === 'animal' ? (
+            <>
+              <Label text="Animal species">
+                <Select value={form.species} onChange={(event) => updateForm({ species: event.target.value })}>
+                  {SPECIES_OPTIONS.map((species) => (
+                    <option key={species}>{species}</option>
+                  ))}
+                </Select>
+              </Label>
+              <Label text="Mortality">
+                <Input type="number" min="0" value={form.mortality} onChange={(event) => updateForm({ mortality: event.target.value })} />
+              </Label>
+              <Label text="Vaccination">
+                <Select value={form.vaccinationStatus} onChange={(event) => updateForm({ vaccinationStatus: event.target.value })}>
+                  {Object.entries(VACCINATION_OPTIONS).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </Select>
+              </Label>
+              <Label text="Farm or holding">
+                <Input value={form.farmId} onChange={(event) => updateForm({ farmId: event.target.value })} />
+              </Label>
+            </>
+          ) : null}
+          <Label text="Status">
+            <Select value={form.confirmationStatus} onChange={(event) => updateForm({ confirmationStatus: event.target.value })}>
+              {Object.entries(CONFIRMATION_OPTIONS).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </Select>
+          </Label>
+          <Label text="Block or village">
+            <Input value={form.block} onChange={(event) => updateForm({ block: event.target.value })} />
+          </Label>
+          <Label text="Symptoms">
+            <Input value={form.symptoms} onChange={(event) => updateForm({ symptoms: event.target.value })} />
+          </Label>
+          <Button className="w-full" disabled={!canWrite} onClick={saveReport}>
             Save report
           </Button>
         </div>
@@ -1147,7 +1494,7 @@ function ReportsPage({ reports, setReports, filters, setFilters, live, reload, s
         <table className="w-full min-w-[560px] border-collapse">
           <thead>
             <tr>
-              {['Date', 'Sector', 'Disease or signal', 'Location', 'Cases'].map((head) => (
+              {['Date', 'Sector', 'Disease or signal', 'Location', 'Cases', 'Pashudhan details'].map((head) => (
                 <th key={head} className="border-b border-ink p-2 text-left text-[13px] font-medium text-mute">
                   {head}
                 </th>
@@ -1165,11 +1512,12 @@ function ReportsPage({ reports, setReports, filters, setFilters, live, reload, s
                   <td className="border-b border-line p-2.5">{row.dis}</td>
                   <td className="border-b border-line p-2.5">{row.loc}</td>
                   <td className="border-b border-line p-2.5">{row.n}</td>
+                  <td className="border-b border-line p-2.5 text-[13px] text-mute">{reportMeta(row) || '-'}</td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan="5" className="p-5 text-mute">
+                <td colSpan="6" className="p-5 text-mute">
                   No reports match these filters.
                 </td>
               </tr>
@@ -1238,7 +1586,7 @@ function DetectionChart({ reports, location }) {
   );
 }
 
-function AlertsPage({ reports, alerts, activeCity, setActiveCity }) {
+function AlertsPage({ reports, alerts, activeCity, setActiveCity, auth, onValidate, onRespond, envByCity }) {
   const cityOptions = getReportLocations(reports);
   const city = activeCity || alerts[0]?.loc || cityOptions[0] || LOCATIONS[0][0];
 
@@ -1250,7 +1598,13 @@ function AlertsPage({ reports, alerts, activeCity, setActiveCity }) {
       </Top>
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] xl:gap-11">
-        <div>{alerts.length ? alerts.map((alert) => <AlertItem key={alert.loc} alert={alert} />) : <div className="py-5 text-mute">No unusual increases this week.</div>}</div>
+        <div>
+          {alerts.length ? (
+            alerts.map((alert) => <AlertItem key={alert.loc} alert={alert} auth={auth} onValidate={onValidate} onRespond={onRespond} envByCity={envByCity} />)
+          ) : (
+            <div className="py-5 text-mute">No unusual increases this week.</div>
+          )}
+        </div>
         <section>
           <h2 className="font-display text-[22px] font-bold">How it was flagged</h2>
           <div className="mb-3 text-sm text-mute">Pick a city to see its daily reports against the usual level</div>
@@ -1266,7 +1620,7 @@ function AlertsPage({ reports, alerts, activeCity, setActiveCity }) {
   );
 }
 
-function PipelinePage({ reports, alerts, live, empty, uploadInfo }) {
+function PipelinePage({ reports, alerts, live, empty, uploadInfo, envByCity, weatherSource }) {
   const locationNames = getReportLocations(reports);
   const sources = [
     ['Human health', 'Hospital and clinic reports', 'human'],
@@ -1277,8 +1631,8 @@ function PipelinePage({ reports, alerts, live, empty, uploadInfo }) {
     ['Collect', reports.length, 'reports received from 3 sectors'],
     ['Clean', new Set(reports.map((row) => row.dis)).size, 'disease and signal names standardized'],
     ['Merge', locationNames.length, 'locations joined across sectors by date'],
-    ['Detect', alerts.length, 'cities above the alert line'],
-    ['Alert', alerts.filter((alert) => alert.severity === 'high').length, 'high-risk alerts to act on'],
+    ['Detect', alerts.length, `${ML_MODEL.version} model scored city risk`],
+    ['Validate', alerts.filter((alert) => alert.validationStatus === 'validated').length, 'alerts with strong evidence'],
   ];
 
   return (
@@ -1311,12 +1665,33 @@ function PipelinePage({ reports, alerts, live, empty, uploadInfo }) {
             ])}
           />
 
+          <h2 className="mt-7 font-display text-[22px] font-bold">Pashudhan surveillance</h2>
+          <div className="mb-2 text-sm text-mute">Animal-specific context used during field triage</div>
+          <DataTable
+            headers={['Species', 'Reports', 'Deaths', 'Unvaccinated', 'Lab confirmed']}
+            rows={(SPECIES_OPTIONS.filter((species) => reports.some((row) => row.species === species)).length
+              ? SPECIES_OPTIONS.filter((species) => reports.some((row) => row.species === species))
+              : ['No species data']
+            ).map((species) => {
+              const speciesRows = reports.filter((row) => row.species === species);
+              return [
+                species,
+                speciesRows.length || '-',
+                speciesRows.reduce((sum, row) => sum + (Number(row.mortality) || 0), 0) || '-',
+                speciesRows.filter((row) => row.vaccinationStatus === 'unvaccinated').length || '-',
+                speciesRows.filter((row) => row.confirmationStatus === 'lab_confirmed').length || '-',
+              ];
+            })}
+          />
+
           <h2 className="mt-7 font-display text-[22px] font-bold">Climate readings</h2>
-          <div className="mb-2 text-sm text-mute">Difference from the usual for this time of year</div>
+          <div className="mb-2 text-sm text-mute">
+            Difference from the usual for this time of year{weatherSource === 'open-meteo' ? ' from live weather context' : ''}
+          </div>
           <DataTable
             headers={['City', 'Temperature', 'Rainfall', 'Flag']}
             rows={locationNames.map((loc) => {
-              const env = ENV[loc] ?? [0, 0];
+              const env = envByCity[loc] ?? [0, 0];
               const flagged = Math.abs(env[0]) >= 3 || Math.abs(env[1]) >= 40;
               return [
                 loc,
@@ -1331,7 +1706,21 @@ function PipelinePage({ reports, alerts, live, empty, uploadInfo }) {
         </section>
 
         <section>
-          <h2 className="font-display text-[22px] font-bold">Livestock corridors</h2>
+          <h2 className="font-display text-[22px] font-bold">ML model</h2>
+          <div className="mb-2 text-sm text-mute">Versioned model profile used by the alert engine</div>
+          <DataTable
+            headers={['Metric', 'Value']}
+            rows={[
+              ['Version', ML_MODEL.version],
+              ['Type', ML_MODEL.modelType],
+              ['ML threshold', Math.round(ML_MODEL.threshold * 100)],
+              ['Backtest precision', `${Math.round(ML_MODEL.calibration.precision * 100)}%`],
+              ['Backtest recall', `${Math.round(ML_MODEL.calibration.recall * 100)}%`],
+              ['Features', ML_MODEL.features.join(', ')],
+            ]}
+          />
+
+          <h2 className="mt-7 font-display text-[22px] font-bold">Livestock corridors</h2>
           <div className="mb-2 text-sm text-mute">Animals moving between cities each week. Routes out of an alerting city are at risk.</div>
           <DataTable
             headers={['Route', 'Animals a week', 'Status']}
@@ -1345,6 +1734,19 @@ function PipelinePage({ reports, alerts, live, empty, uploadInfo }) {
                 </span>,
               ];
             })}
+          />
+
+          <h2 className="mt-7 font-display text-[22px] font-bold">Alert validation</h2>
+          <div className="mb-2 text-sm text-mute">Automated evidence checks before an alert is escalated</div>
+          <DataTable
+            headers={['City', 'Method', 'Score', 'Validation', 'Response']}
+            rows={(alerts.length ? alerts : [{ loc: 'None', validation: { method: '-', score: 0, label: 'No active alerts' } }]).map((alert) => [
+              alert.loc,
+              alert.validation.method,
+              alert.validation.score,
+              alert.manualValidation?.status || alert.validation.label,
+              RESPONSE_STATUSES[alert.manualValidation?.responseStatus || 'new'],
+            ])}
           />
         </section>
       </div>
@@ -1393,12 +1795,170 @@ function App() {
   const [activeCity, setActiveCity] = useState(null);
   const [toast, setToast] = useState('');
   const [uploadInfo, setUploadInfo] = useState(null);
+  const [weatherByCity, setWeatherByCity] = useState(ENV);
+  const [weatherSource, setWeatherSource] = useState('demo');
+  const [auth, setAuth] = useState(() => {
+    try {
+      return JSON.parse(window.localStorage.getItem(AUTH_STORAGE_KEY) || 'null');
+    } catch {
+      return null;
+    }
+  });
+  const [manualValidations, setManualValidations] = useState({});
   const csvUploadToken = useRef(0);
-  const alerts = useMemo(() => computeAlerts(reports), [reports]);
+  const rawAlerts = useMemo(() => computeAlerts(reports, weatherByCity), [reports, weatherByCity]);
+  const alerts = useMemo(
+    () =>
+      rawAlerts.map((alert) => {
+        const manualValidation = manualValidations[alert.loc];
+        return manualValidation ? { ...alert, manualValidation, validationStatus: manualValidation.status } : alert;
+      }),
+    [manualValidations, rawAlerts],
+  );
 
   const showToast = (message) => {
     setToast(message);
     window.setTimeout(() => setToast(''), 2200);
+  };
+
+  const login = async (username, password) => {
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!response.ok) throw new Error('login failed');
+      const nextAuth = await response.json();
+      setAuth(nextAuth);
+      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextAuth));
+      showToast(`Logged in as ${nextAuth.user.role}`);
+      return true;
+    } catch {
+      showToast('Login failed');
+      return false;
+    }
+  };
+
+  const logout = () => {
+    setAuth(null);
+    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    showToast('Signed out');
+  };
+
+  const loadServerAlertContext = async (tokenAtStart) => {
+    try {
+      const response = await fetch('/api/alerts');
+      if (!response.ok || tokenAtStart !== csvUploadToken.current) return;
+      const serverAlerts = await response.json();
+      const nextValidations = Object.fromEntries(
+        serverAlerts
+          .filter((alert) => alert.manualValidation)
+          .map((alert) => [alert.location || alert.loc, alert.manualValidation]),
+      );
+      setManualValidations(nextValidations);
+    } catch {
+      setManualValidations({});
+    }
+  };
+
+  const loadWeatherContext = async (nextReports, tokenAtStart) => {
+    const points = getReportLocations(nextReports)
+      .map((loc) => {
+        const sample = nextReports.find((row) => row.loc === loc && getReportCoords(row));
+        const coords = sample ? getReportCoords(sample) : getKnownCoords(loc);
+        return coords ? `${encodeURIComponent(loc)}:${coords[0]}:${coords[1]}` : null;
+      })
+      .filter(Boolean)
+      .slice(0, 12)
+      .join('|');
+
+    if (!points) return;
+
+    try {
+      const response = await fetch(`/api/context/weather?points=${points}`);
+      if (!response.ok || tokenAtStart !== csvUploadToken.current) return;
+      const payload = await response.json();
+      const liveReadings = (payload.readings || []).filter((item) => item.source === 'open-meteo');
+      if (liveReadings.length) {
+        setWeatherByCity((current) => ({
+          ...current,
+          ...Object.fromEntries(liveReadings.map((item) => [item.location, [item.tempAnomaly, item.rainfallAnomaly]])),
+        }));
+        setWeatherSource('open-meteo');
+      }
+    } catch {
+      setWeatherSource('demo');
+    }
+  };
+
+  const validateAlert = async (location, status) => {
+    if (!can(auth, 'alerts:validate')) {
+      showToast('Login as analyst or admin to validate alerts');
+      return;
+    }
+
+    const manualValidation = {
+      status,
+      by: auth.user.username,
+      role: auth.user.role,
+      at: new Date().toISOString(),
+    };
+
+    if (live) {
+      try {
+        const response = await fetch(`/api/alerts/${encodeURIComponent(location)}/validate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` },
+          body: JSON.stringify({ status }),
+        });
+        if (!response.ok) throw new Error('validation failed');
+        const payload = await response.json();
+        setManualValidations((current) => ({ ...current, [location]: payload.manualValidation }));
+        showToast(`Alert marked ${status}`);
+        return;
+      } catch {
+        showToast('Could not save validation to server');
+        return;
+      }
+    }
+
+    setManualValidations((current) => ({ ...current, [location]: manualValidation }));
+    showToast(`Alert marked ${status} in demo mode`);
+  };
+
+  const updateAlertResponse = async (location, responseStatus) => {
+    if (!can(auth, 'alerts:validate')) {
+      showToast('Login as analyst or admin to update field response');
+      return;
+    }
+
+    const manualValidation = {
+      ...(manualValidations[location] || { status: 'review', by: auth.user.username, role: auth.user.role, at: new Date().toISOString() }),
+      responseStatus,
+      responseUpdatedAt: new Date().toISOString(),
+    };
+
+    if (live) {
+      try {
+        const response = await fetch(`/api/alerts/${encodeURIComponent(location)}/respond`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` },
+          body: JSON.stringify({ responseStatus }),
+        });
+        if (!response.ok) throw new Error('response update failed');
+        const payload = await response.json();
+        setManualValidations((current) => ({ ...current, [location]: payload.manualValidation }));
+        showToast(`Response set to ${RESPONSE_STATUSES[responseStatus] || responseStatus}`);
+        return;
+      } catch {
+        showToast('Could not save response to server');
+        return;
+      }
+    }
+
+    setManualValidations((current) => ({ ...current, [location]: manualValidation }));
+    showToast(`Response set to ${RESPONSE_STATUSES[responseStatus] || responseStatus} in demo mode`);
   };
 
   const loadReports = async (first = false) => {
@@ -1418,8 +1978,7 @@ function App() {
 
       if (rows.length) {
         const today = new Date().setHours(0, 0, 0, 0);
-        setReports(
-          rows.map((row, index) => {
+        const nextReports = rows.map((row, index) => {
             const coords = getKnownCoords(row.location);
             return {
               id: rows.length - index,
@@ -1430,9 +1989,20 @@ function App() {
               sec: row.sector,
               dis: row.disease,
               n: row.cases,
+              species: row.species,
+              symptoms: row.symptoms,
+              mortality: row.mortality,
+              vaccinationStatus: row.vaccinationStatus,
+              confirmationStatus: row.confirmationStatus,
+              farmId: row.farmId,
+              block: row.block,
             };
-          }),
-        );
+          });
+        setReports(nextReports);
+        loadServerAlertContext(tokenAtStart);
+        loadWeatherContext(nextReports, tokenAtStart);
+      } else {
+        setManualValidations({});
       }
     } catch {
       setLive(false);
@@ -1453,6 +2023,35 @@ function App() {
       return;
     }
 
+    if (live) {
+      if (!can(auth, 'reports:write')) {
+        showToast('Login as analyst or admin to save CSV to MongoDB');
+        return;
+      }
+
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await fetch('/api/reports/import-csv', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${auth.token}` },
+          body: formData,
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || 'CSV import failed');
+
+        await loadReports(false);
+        setUploadInfo({ name: file.name, rows: payload.inserted, skipped: payload.skipped, saved: true });
+        setSelectedLocation(null);
+        setPage('dashboard');
+        showToast(`Saved ${payload.inserted.toLocaleString('en-IN')} CSV rows to MongoDB`);
+        return;
+      } catch (err) {
+        showToast(err.message || 'Could not save this CSV');
+        return;
+      }
+    }
+
     try {
       const text = await file.text();
       const parsed = parseUploadedCsv(text);
@@ -1466,6 +2065,9 @@ function App() {
       }
 
       setReports(parsed.reports);
+      setWeatherByCity(ENV);
+      setWeatherSource('demo');
+      setManualValidations({});
       setLive(false);
       setEmpty(false);
       setUploadInfo({ name: file.name, rows: parsed.reports.length, skipped: parsed.skipped });
@@ -1513,15 +2115,37 @@ function App() {
         live={live}
         reload={() => loadReports(false)}
         showToast={showToast}
+        auth={auth}
       />
     ),
-    alerts: <AlertsPage reports={reports} alerts={alerts} activeCity={activeCity} setActiveCity={setActiveCity} />,
-    pipeline: <PipelinePage reports={reports} alerts={alerts} live={live} empty={empty} uploadInfo={uploadInfo} />,
+    alerts: (
+      <AlertsPage
+        reports={reports}
+        alerts={alerts}
+        activeCity={activeCity}
+        setActiveCity={setActiveCity}
+        auth={auth}
+        onValidate={validateAlert}
+        onRespond={updateAlertResponse}
+        envByCity={weatherByCity}
+      />
+    ),
+    pipeline: <PipelinePage reports={reports} alerts={alerts} live={live} empty={empty} uploadInfo={uploadInfo} envByCity={weatherByCity} weatherSource={weatherSource} />,
   }[page];
 
   return (
     <>
-      <Header page={page} setPage={setPage} alertCount={alerts.length} live={live} empty={empty} uploadInfo={uploadInfo} />
+      <Header
+        page={page}
+        setPage={setPage}
+        alertCount={alerts.length}
+        live={live}
+        empty={empty}
+        uploadInfo={uploadInfo}
+        auth={auth}
+        onLogin={login}
+        onLogout={logout}
+      />
       <main className="mx-auto max-w-[1500px] px-4 py-7 pb-16 sm:px-8 lg:px-11">{content}</main>
       {toast ? (
         <div className="fixed bottom-5 left-1/2 max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-[22px] bg-ink px-[18px] py-2.5 text-center font-semibold text-bg shadow-soft">
