@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
+import { cityStats, computeAlerts as computeSharedAlerts } from '../../shared/anomalyEngine.mjs';
 
 const SECTORS = {
   human: 'Human',
@@ -187,13 +188,6 @@ function createDemoReports() {
 const DEMO_REPORTS = createDemoReports();
 const total = (rows) => rows.reduce((sum, row) => sum + row.n, 0);
 const sign = (value) => `${value > 0 ? '+' : ''}${value}`;
-const ALERT_RULES = {
-  minRecent: 8,
-  minRatio: 1.8,
-  minZ: 2,
-};
-
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const dateLabel = (day) =>
   new Date(Date.now() - day * 864e5).toLocaleDateString('en-IN', {
     day: 'numeric',
@@ -439,92 +433,8 @@ function parseUploadedCsv(text) {
   return { reports, skipped };
 }
 
-const citySeries = (reports, location) =>
-  [...Array(30).keys()].reverse().map((day) => total(reports.filter((row) => row.loc === location && row.day === day)));
-
-function cityStats(reports, location) {
-  const series = citySeries(reports, location);
-  const base = series.slice(0, 23);
-  const recent = series.slice(23);
-  const mean = base.reduce((sum, value) => sum + value, 0) / 23;
-  const sd = Math.sqrt(base.reduce((sum, value) => sum + (value - mean) ** 2, 0) / 23) || 1;
-  const recentTotal = recent.reduce((sum, value) => sum + value, 0);
-  const recentMean = recentTotal / 7;
-
-  return {
-    series,
-    mean,
-    sd,
-    recentTotal,
-    baselineTotal: mean * 7,
-    z: (recentMean - mean) / sd,
-    ratio: recentMean / Math.max(mean, 0.3),
-  };
-}
-
-function anomalyConfidence({ ratio, z, recentTotal }, sectorsUp, envOdd, load) {
-  const ratioScore = clamp((ratio - ALERT_RULES.minRatio) * 14, 0, 22);
-  const zScore = clamp((z - ALERT_RULES.minZ) * 9, 0, 22);
-  const volumeScore = clamp((recentTotal - ALERT_RULES.minRecent) * 1.2, 0, 14);
-  const sectorScore = sectorsUp.length * 7;
-  const contextScore = (envOdd ? 8 : 0) + clamp(load / 500, 0, 8);
-  return clamp(Math.round(48 + ratioScore + zScore + volumeScore + sectorScore + contextScore), 50, 99);
-}
-
 function computeAlerts(reports) {
-  const alerts = [];
-
-  for (const loc of getReportLocations(reports)) {
-    const stats = cityStats(reports, loc);
-    const week = reports.filter((row) => row.loc === loc && row.day < 7);
-    const recent = total(week);
-
-    if (recent < ALERT_RULES.minRecent || stats.ratio < ALERT_RULES.minRatio || stats.z < ALERT_RULES.minZ) continue;
-
-    const diseaseTotals = {};
-    for (const row of week) diseaseTotals[row.dis] = (diseaseTotals[row.dis] || 0) + row.n;
-    const disease = Object.entries(diseaseTotals).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'Unknown signal';
-    const up = Object.keys(SECTORS).filter((sector) => {
-      const recentSector = total(week.filter((row) => row.sec === sector));
-      const baseline = total(reports.filter((row) => row.loc === loc && row.sec === sector && row.day >= 7 && row.day < 28)) / 3;
-      return recentSector >= 2 && recentSector > baseline * 1.3;
-    });
-    const corridors = CORRIDORS.filter(([from]) => from === loc);
-    const load = corridors.reduce((sum, route) => sum + route[2], 0);
-    const env = ENV[loc] ?? [0, 0];
-    const envOdd = Math.abs(env[0]) >= 3 || Math.abs(env[1]) >= 40;
-    const confidence = anomalyConfidence(stats, up, envOdd, load);
-    const risk = Math.min(
-      99,
-      Math.round(confidence * 0.72 + up.length * 5 + (envOdd ? 8 : 0) + Math.min(load / 450, 7)),
-    );
-    const drivers = [
-      `${stats.ratio.toFixed(1)}x usual activity`,
-      `z-score ${stats.z.toFixed(1)}`,
-      up.length ? `${up.length} sector${up.length === 1 ? '' : 's'} rising` : null,
-      envOdd ? 'weather anomaly' : null,
-      load ? `${load.toLocaleString('en-IN')} animals/week on outbound corridors` : null,
-    ].filter(Boolean);
-
-    alerts.push({
-      loc,
-      recent,
-      base: stats.baselineTotal.toFixed(1),
-      ratio: stats.ratio,
-      z: stats.z,
-      disease,
-      up,
-      corridors,
-      load,
-      envOdd,
-      confidence,
-      drivers,
-      risk,
-      severity: risk >= 65 ? 'high' : 'medium',
-    });
-  }
-
-  return alerts.sort((a, b) => b.risk - a.risk);
+  return computeSharedAlerts(reports, { env: ENV, corridors: CORRIDORS });
 }
 
 const mapX = (lon) => (lon - 67) * 14;
@@ -674,7 +584,7 @@ function ActionList({ alert }) {
   );
 }
 
-function LeafletDiseaseMap({ reports, alerts, layers, selectedLocation, setSelectedLocation }) {
+function LeafletDiseaseMap({ reports, alerts, layers, mapFilters, selectedLocation, setSelectedLocation }) {
   const nodeRef = useRef(null);
   const mapRef = useRef(null);
   const layerRef = useRef(null);
@@ -686,11 +596,17 @@ function LeafletDiseaseMap({ reports, alerts, layers, selectedLocation, setSelec
           const sample = reports.find((row) => row.loc === loc && getReportCoords(row));
           const coords = sample ? getReportCoords(sample) : getKnownCoords(loc);
           if (!coords) return null;
-          const count = total(reports.filter((row) => row.loc === loc && row.day < 7));
-          return { loc, coords, count, alert: alertByCity[loc] };
+          const alert = alertByCity[loc];
+          const count = total(
+            reports.filter((row) => row.loc === loc && row.day < 7 && (mapFilters.sector === 'all' || row.sec === mapFilters.sector)),
+          );
+          if (count < mapFilters.minCases) return null;
+          if (mapFilters.severity === 'alerts' && !alert) return null;
+          if (mapFilters.severity === 'high' && alert?.severity !== 'high') return null;
+          return { loc, coords, count, alert };
         })
         .filter(Boolean),
-    [reports, alertByCity],
+    [reports, alertByCity, mapFilters],
   );
 
   useEffect(() => {
@@ -745,19 +661,24 @@ function LeafletDiseaseMap({ reports, alerts, layers, selectedLocation, setSelec
       });
     }
 
+    const maxCount = Math.max(...points.map((point) => point.count), 1);
+
     points.forEach(({ loc, coords, count, alert }) => {
       const alerted = Boolean(alert);
       const color = alerted ? '#e5322d' : '#0a8f78';
       const radius = 6 + Math.min(count, 40) * 0.7;
+      const intensity = Math.max(0.22, count / maxCount);
 
       if (layers.heat && count > 0) {
-        L.circle(coords, {
-          radius: 18000 + Math.min(count, 80) * 1800,
-          color,
-          fillColor: color,
-          fillOpacity: alerted ? 0.16 : 0.1,
-          opacity: 0,
-        }).addTo(layer);
+        [1.8, 1.15, 0.55].forEach((scale, index) => {
+          L.circle(coords, {
+            radius: (18000 + Math.min(count, 80) * 1800) * scale,
+            color,
+            fillColor: color,
+            fillOpacity: (alerted ? 0.1 : 0.07) * intensity * (index + 1),
+            opacity: 0,
+          }).addTo(layer);
+        });
       }
 
       L.circleMarker(coords, {
@@ -781,13 +702,22 @@ function LeafletDiseaseMap({ reports, alerts, layers, selectedLocation, setSelec
   return <div ref={nodeRef} className="onehealth-map flex-1 overflow-hidden rounded-[16px]" aria-label="Interactive OpenStreetMap disease report map" />;
 }
 
-function MapPanel({ reports, alerts, layers, setLayers, selectedLocation, setSelectedLocation }) {
+function MapPanel({ reports, alerts, layers, setLayers, mapFilters, setMapFilters, selectedLocation, setSelectedLocation }) {
   const alertByCity = Object.fromEntries(alerts.map((alert) => [alert.loc, alert]));
-  const weekForCity = (loc) => reports.filter((row) => row.loc === loc && row.day < 7);
+  const weekForCity = (loc) => reports.filter((row) => row.loc === loc && row.day < 7 && (mapFilters.sector === 'all' || row.sec === mapFilters.sector));
   const selectedWeek = selectedLocation ? weekForCity(selectedLocation) : [];
   const selectedAlert = selectedLocation ? alertByCity[selectedLocation] : null;
   const selectedEnv = selectedLocation ? (ENV[selectedLocation] ?? [0, 0]) : [0, 0];
-  const mappedLocations = getReportLocations(reports).filter((loc) => reports.some((row) => row.loc === loc && getReportCoords(row)));
+  const mappedLocations = getReportLocations(reports).filter((loc) => {
+    const weeklyCount = total(weekForCity(loc));
+    const alert = alertByCity[loc];
+    if (!reports.some((row) => row.loc === loc && getReportCoords(row))) return false;
+    if (weeklyCount < mapFilters.minCases) return false;
+    if (mapFilters.severity === 'alerts' && !alert) return false;
+    if (mapFilters.severity === 'high' && alert?.severity !== 'high') return false;
+    return true;
+  });
+  const updateMapFilter = (patch) => setMapFilters((current) => ({ ...current, ...patch }));
 
   return (
     <div className="map-shell flex min-h-full flex-col rounded-[24px] p-4 text-[#dbe6f2] sm:p-6">
@@ -810,12 +740,52 @@ function MapPanel({ reports, alerts, layers, setLayers, selectedLocation, setSel
           </button>
         ))}
       </div>
+      <div className="mb-3 grid gap-2 text-[13px] sm:grid-cols-3">
+        <label className="grid gap-1 text-[#9fb2c8]">
+          Sector
+          <select
+            className="rounded-[10px] border border-[#2b4161] bg-[#0d1b2b] px-2.5 py-2 text-[#dbe6f2] outline-none focus-visible:ring-2 focus-visible:ring-env"
+            value={mapFilters.sector}
+            onChange={(event) => updateMapFilter({ sector: event.target.value })}
+          >
+            <option value="all">All sectors</option>
+            {Object.entries(SECTORS).map(([key, label]) => (
+              <option key={key} value={key}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="grid gap-1 text-[#9fb2c8]">
+          Alert level
+          <select
+            className="rounded-[10px] border border-[#2b4161] bg-[#0d1b2b] px-2.5 py-2 text-[#dbe6f2] outline-none focus-visible:ring-2 focus-visible:ring-env"
+            value={mapFilters.severity}
+            onChange={(event) => updateMapFilter({ severity: event.target.value })}
+          >
+            <option value="all">All places</option>
+            <option value="alerts">Alerts only</option>
+            <option value="high">High risk</option>
+          </select>
+        </label>
+        <label className="grid gap-1 text-[#9fb2c8]">
+          Min weekly cases
+          <input
+            className="rounded-[10px] border border-[#2b4161] bg-[#0d1b2b] px-2.5 py-2 text-[#dbe6f2] outline-none focus-visible:ring-2 focus-visible:ring-env"
+            min="0"
+            type="number"
+            value={mapFilters.minCases}
+            onChange={(event) => updateMapFilter({ minCases: Math.max(0, Math.round(Number(event.target.value) || 0)) })}
+          />
+        </label>
+      </div>
 
       <div className="grid flex-1 items-stretch gap-3 lg:grid-cols-[minmax(0,1fr)_190px]">
         <LeafletDiseaseMap
           reports={reports}
           alerts={alerts}
           layers={layers}
+          mapFilters={mapFilters}
           selectedLocation={selectedLocation}
           setSelectedLocation={setSelectedLocation}
         />
@@ -844,7 +814,7 @@ function MapPanel({ reports, alerts, layers, setLayers, selectedLocation, setSel
           ) : (
             <>
               <b className="block font-display text-[22px] font-bold text-white">Pick a city</b>
-              Click a bubble to see this week's reports by sector. {mappedLocations.length.toLocaleString('en-IN')} mapped locations loaded.
+              Click a bubble to see this week's reports by sector. {mappedLocations.length.toLocaleString('en-IN')} locations match the map filters.
             </>
           )}
         </div>
@@ -947,7 +917,21 @@ function LeadingSignals({ reports }) {
   );
 }
 
-function Dashboard({ reports, alerts, setPage, layers, setLayers, selectedLocation, setSelectedLocation, live, empty, uploadInfo, onCsvUpload }) {
+function Dashboard({
+  reports,
+  alerts,
+  setPage,
+  layers,
+  setLayers,
+  mapFilters,
+  setMapFilters,
+  selectedLocation,
+  setSelectedLocation,
+  live,
+  empty,
+  uploadInfo,
+  onCsvUpload,
+}) {
   const week = (sector) => reports.filter((row) => row.day < 7 && (!sector || row.sec === sector));
   const locationCount = getReportLocations(reports).length;
   const trend = (sector) => {
@@ -985,6 +969,8 @@ function Dashboard({ reports, alerts, setPage, layers, setLayers, selectedLocati
           alerts={alerts}
           layers={layers}
           setLayers={setLayers}
+          mapFilters={mapFilters}
+          setMapFilters={setMapFilters}
           selectedLocation={selectedLocation}
           setSelectedLocation={setSelectedLocation}
         />
@@ -1402,6 +1388,7 @@ function App() {
   const [empty, setEmpty] = useState(false);
   const [filters, setFilters] = useState({ sec: 'all', loc: 'all' });
   const [layers, setLayers] = useState({ heat: true, corridors: true });
+  const [mapFilters, setMapFilters] = useState({ sector: 'all', severity: 'all', minCases: 0 });
   const [selectedLocation, setSelectedLocation] = useState(null);
   const [activeCity, setActiveCity] = useState(null);
   const [toast, setToast] = useState('');
@@ -1507,6 +1494,8 @@ function App() {
         setPage={setPage}
         layers={layers}
         setLayers={setLayers}
+        mapFilters={mapFilters}
+        setMapFilters={setMapFilters}
         selectedLocation={selectedLocation}
         setSelectedLocation={setSelectedLocation}
         live={live}

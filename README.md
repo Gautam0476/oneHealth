@@ -39,11 +39,16 @@ cd client
 npm run build
 ```
 
+Deployment and demo notes:
+
+- [Deployment guide](docs/DEPLOYMENT.md)
+- [Demo and screenshot guide](docs/DEMO.md)
+
 ## What works
-- **Dashboard:** map with heatmap and livestock corridor toggles, early warnings, weekly stats, charts.
+- **Dashboard:** map with heatmap, livestock corridor toggles, sector/risk filters, early warnings, weekly stats, charts.
 - **CSV live upload:** use "Upload CSV Dataset" on the dashboard to load any compatible `.csv` dataset directly in the browser. The CSV must include cases/count/value and disease/signal/sector style headers, plus either a location column or latitude/longitude. The map, charts and alerts update immediately without saving the CSV to MongoDB. A ready demo file is included at `data/sample-one-health.csv`.
 - **Reports:** add a report (saved in MongoDB), filter by sector and location.
-- **Alerts:** multivariate anomaly score, confidence, recommended actions, and a chart showing why a city was flagged.
+- **Alerts:** shared frontend/backend anomaly engine with rule thresholds, a lightweight isolation-forest style ML score, confidence, recommended actions, and a chart showing why a city was flagged.
 - **Data pipeline:** stages, sources, climate and corridor tables.
 - The top right label shows "Connected to database", or "Demo data" if the server is offline.
 
@@ -64,11 +69,12 @@ npm run build
 - Set `ADMIN_TOKEN` before public deployment if report creation should be restricted.
 
 ## How an alert is raised
-For each city, the last 7 days are compared with the 23 days before. A city is flagged when it has at least 8 reports this week, runs at least 1.8 times its usual level, and its z-score is 2 or more. The anomaly engine then computes a confidence/risk score (0 to 100) from:
+For each city, the last 7 days are compared with the 23 days before. A city is flagged when it has at least 8 reports this week, runs at least 1.8 times its usual level, and its z-score is 2 or more. The shared anomaly engine also calculates a lightweight isolation-forest style ML score from recent volume, ratio, z-score, active sectors, climate context and corridor load. Confidence/risk score (0 to 100) comes from:
 
 - report volume
 - ratio above usual activity
 - z-score above the baseline
+- ML anomaly score
 - sectors rising together
 - unusual weather
 - livestock corridor load leaving the city
@@ -78,7 +84,7 @@ This is an explainable anomaly engine for early warning, not a confirmed outbrea
 ## What is real and what is sample
 - Real: reports in MongoDB, optional latitude/longitude on reports, CSV ingestion in the browser, the anomaly/risk logic, adding and filtering reports.
 - Sample: climate readings and livestock corridors are fixed demo values in `client/src/App.jsx` (`ENV` and `CORRIDORS`). The server uses the same demo context in `server/detect.js`. The map uses Leaflet and OpenStreetMap, so uploaded CSV rows can create bubbles beyond the original demo cities when coordinates or recognized city names are present.
-- The browser works out alerts from the reports it loads. `server/detect.js` does the same on the server (`GET /api/alerts`).
+- The browser and `server/detect.js` both use `shared/anomalyEngine.mjs`, so dashboard and API alerts stay aligned.
 
 ## Demo flow
 1. Start the app.
@@ -93,9 +99,12 @@ client/src/App.jsx         React dashboard
 client/src/styles.css      Tailwind entry and theme variables
 client/tailwind.config.js  Tailwind setup
 client/dist/               built frontend served by Express
+shared/anomalyEngine.mjs   shared rule + ML-style anomaly scoring
 server/server.js           starts the app
 server/detect.js           alert logic
 server/seed.js             sample data
 server/models/Report.js    report schema
 server/routes/             reports.js, alerts.js
+server/test/               backend tests
+docs/                      deployment and demo notes
 ```
