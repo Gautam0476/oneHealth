@@ -3,6 +3,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const Report = require('./models/Report');
 const User = require('./models/User');
+const { withReportQuality } = require('./reportQuality');
 
 const cities = ['Jaipur', 'Delhi', 'Lucknow', 'Patna', 'Kolkata', 'Guwahati', 'Mumbai', 'Pune', 'Bhopal', 'Hyderabad', 'Bengaluru', 'Chennai'];
 const diseases = {
@@ -23,7 +24,7 @@ const animalMeta = (location, disease, d) => ({
   block: location === 'Jaipur' ? 'Amber' : location === 'Guwahati' ? 'Dispur' : 'Central block',
 });
 const add = (sector, disease, location, cases, d, extra = {}) =>
-  data.push({
+  data.push(withReportQuality({
     sector,
     disease,
     location,
@@ -31,7 +32,7 @@ const add = (sector, disease, location, cases, d, extra = {}) =>
     date: daysAgo(d),
     ...(sector === 'animal' ? animalMeta(location, disease, d) : {}),
     ...extra,
-  });
+  }, { sourceType: 'seed', sourceName: 'Seed demo dataset', sourceUploadedBy: 'seed' }));
 
 const data = [];
 for (let d = 29; d >= 0; d--) {

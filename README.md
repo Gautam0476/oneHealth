@@ -73,8 +73,9 @@ Key screenshots:
 - **CSV import:** use "Upload CSV Dataset" on the dashboard to save any compatible `.csv` dataset to MongoDB when logged in as analyst/admin. If the backend is unavailable, the same button still loads the CSV in-browser for demo mode. The CSV must include cases/count/value and disease/signal/sector style headers, plus either a location column or latitude/longitude. Pashudhan columns such as species, symptoms, mortality, vaccination status, lab status, farm ID and block/village are preserved when present. A ready demo file is included at `data/sample-one-health.csv`.
 - **Reports:** add a report (saved in MongoDB), filter by sector and location, and capture animal species, symptoms, mortality, vaccination, suspected/confirmed status, farm and block for livestock cases.
 - **Roles:** login as viewer, analyst or admin. Analysts/admins can save live reports, validate alerts and update field response status.
+- **Admin:** admins can create users, change roles, disable accounts, inspect recent audit logs and review data quality/provenance indicators.
 - **Alerts:** shared frontend/backend anomaly engine with rule thresholds, a calibrated ML ensemble score, validation checks, confidence, recommended actions, and a chart showing why a city was flagged.
-- **Data pipeline:** stages, sources, climate, corridor, ML model and validation tables.
+- **Data pipeline:** stages, sources, climate, corridor, ML model, validation, report quality and provenance tables.
 - The top right label shows "Connected to database", or "Demo data" if the server is offline.
 
 ## API
@@ -88,6 +89,11 @@ Key screenshots:
 | `POST /api/alerts/:location/respond` | Move a field response through `new`, `investigating`, `sample_collected`, `contained` or `resolved` |
 | `POST /api/auth/login` | Login and receive a signed role token |
 | `GET /api/auth/me` | Check the current role token |
+| `GET /api/admin/users` | Admin-only user and role list |
+| `POST /api/admin/users` | Admin-only user creation |
+| `PATCH /api/admin/users/:username` | Admin-only role, password or active-status update |
+| `GET /api/admin/audit` | Admin-only audit trail for login, report, alert and user-management actions |
+| `GET /api/admin/quality` | Admin-only report quality, source mix and provenance summary |
 | `GET /api/ml/model` | Versioned ML model profile and backtest metrics |
 | `GET /api/dashboard/stats` | This week and last week totals per sector |
 | `GET /api/context/weather?points=City:lat:lon\|City:lat:lon` | Optional live weather context from Open-Meteo with Mongo/in-memory cache |
@@ -114,7 +120,7 @@ For each city, the last 7 days are compared with the 23 days before. A city is f
 This is an explainable anomaly engine for early warning, not a confirmed outbreak diagnosis.
 
 ## What is real and what is sample
-- Real: reports in MongoDB, Pashudhan-specific animal fields, DB-backed role users with salted password hashes, audit logs, persistent manual alert validations and response status, optional latitude/longitude on reports, server-side CSV import to MongoDB, browser-only CSV fallback, the anomaly/risk logic, adding and filtering reports.
+- Real: reports in MongoDB, Pashudhan-specific animal fields, DB-backed role users with salted password hashes, admin user management, audit logs, report quality/provenance scoring, persistent manual alert validations and response status, optional latitude/longitude on reports, server-side CSV import to MongoDB, browser-only CSV fallback, the anomaly/risk logic, adding and filtering reports.
 - Live optional: the dashboard asks `/api/context/weather` for Open-Meteo readings when the backend is available; the app falls back to demo climate context if the external API is unavailable.
 - Sample: livestock corridors are fixed demo values in `client/src/App.jsx` (`CORRIDORS`). Demo climate defaults still seed the alert engine before live weather context arrives. The map uses Leaflet with Esri Dark Gray basemap tiles, so uploaded CSV rows can create bubbles beyond the original demo cities when coordinates or recognized city names are present.
 - The browser and `server/detect.js` both use `shared/anomalyEngine.mjs`, so dashboard and API alerts stay aligned.

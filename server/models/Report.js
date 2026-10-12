@@ -14,5 +14,11 @@ module.exports = mongoose.model('Report', new mongoose.Schema({
   confirmationStatus: { type: String, enum: ['suspected', 'lab_confirmed'], default: 'suspected' },
   farmId:   { type: String, trim: true, maxlength: 80 },
   block:    { type: String, trim: true, maxlength: 80 },
+  sourceType: { type: String, enum: ['manual', 'csv', 'seed', 'demo'], default: 'manual', index: true },
+  sourceName: { type: String, trim: true, maxlength: 120 },
+  sourceUploadedBy: { type: String, trim: true, maxlength: 80 },
+  sourceUploadedAt: { type: Date },
+  dataQualityScore: { type: Number, default: 70, min: 0, max: 100, index: true },
+  qualityFlags: [{ type: String, trim: true, maxlength: 60 }],
   date:     { type: Date, default: Date.now, index: true },
 }));

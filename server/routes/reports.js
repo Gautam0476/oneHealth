@@ -3,6 +3,7 @@ const multer = require('multer');
 const Report = require('../models/Report');
 const { requirePermission, writeAudit } = require('../auth');
 const { parseReportCsvBuffer } = require('../csvImport');
+const { withReportQuality } = require('../reportQuality');
 
 const SECTORS = new Set(['human', 'animal', 'environment']);
 const upload = multer({
@@ -88,7 +89,13 @@ router.post('/import-csv', requirePermission('reports:write'), handleCsvUpload, 
     const parsed = await parseReportCsvBuffer(req.file.buffer);
     if (parsed.error) return res.status(400).json(parsed);
 
-    const inserted = await Report.insertMany(parsed.reports, { ordered: false });
+    const reports = parsed.reports.map((report) => withReportQuality(report, {
+      sourceType: 'csv',
+      sourceName: req.file.originalname,
+      sourceUploadedBy: req.user.username,
+      sourceUploadedAt: new Date(),
+    }));
+    const inserted = await Report.insertMany(reports, { ordered: false });
     await writeAudit('reports.csv.imported', req.user, {
       fileName: req.file.originalname,
       inserted: inserted.length,
@@ -127,7 +134,7 @@ router.post('/', requirePermission('reports:write'), async (req, res) => {
     if (longitude === null) return res.status(400).json({ error: 'longitude must be between -180 and 180' });
     if (date === null) return res.status(400).json({ error: 'date must be a valid date' });
 
-    res.status(201).json(await Report.create({
+    const report = withReportQuality({
       disease,
       sector,
       location,
@@ -142,7 +149,21 @@ router.post('/', requirePermission('reports:write'), async (req, res) => {
       farmId: cleanOptionalText(req.body.farmId, 80),
       block: cleanOptionalText(req.body.block, 80),
       date,
-    }));
+    }, {
+      sourceType: 'manual',
+      sourceName: 'Manual report form',
+      sourceUploadedBy: req.user.username,
+      sourceUploadedAt: new Date(),
+    });
+
+    const saved = await Report.create(report);
+    await writeAudit('reports.manual.created', req.user, {
+      reportId: saved._id,
+      location: saved.location,
+      sector: saved.sector,
+      dataQualityScore: saved.dataQualityScore,
+    }, req);
+    res.status(201).json(saved);
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

@@ -76,6 +76,7 @@ app.use('/api', (req, res, next) => req.path.startsWith('/auth/')
 
 app.use('/api/reports', require('./routes/reports'));
 app.use('/api', require('./routes/alerts'));
+app.use('/api/admin', require('./routes/admin'));
 
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 app.use(express.static(clientDist)); // serves the React dashboard after npm run build

@@ -42,6 +42,24 @@ const RESPONSE_STATUSES = {
   contained: 'Contained',
   resolved: 'Resolved',
 };
+const SOURCE_LABELS = {
+  manual: 'Manual entry',
+  csv: 'CSV import',
+  seed: 'Seed dataset',
+  demo: 'Demo dataset',
+  csv_browser: 'Browser CSV',
+};
+const QUALITY_LABELS = {
+  missing_coordinates: 'No coordinates',
+  missing_species: 'Species missing',
+  unknown_vaccination: 'Vaccination unknown',
+  lab_pending: 'Lab pending',
+  missing_farm_or_holding: 'Farm missing',
+  missing_block_or_village: 'Block missing',
+  stale_report: 'Stale report',
+  mortality_exceeds_cases: 'Deaths exceed cases',
+  missing_source: 'Source missing',
+};
 
 const CITY_COORDS = {
   Agartala: [23.84, 91.28],
@@ -219,12 +237,56 @@ function reportMeta(row) {
   return parts.join(' | ');
 }
 
+function assessUiQuality(row) {
+  const flags = [];
+  if (!Number.isFinite(Number(row.lat)) || !Number.isFinite(Number(row.lon))) flags.push('missing_coordinates');
+  if (!row.sourceType) flags.push('missing_source');
+  if (row.day > 21) flags.push('stale_report');
+  if (row.sec === 'animal') {
+    if (!row.species) flags.push('missing_species');
+    if (!row.vaccinationStatus || row.vaccinationStatus === 'unknown') flags.push('unknown_vaccination');
+    if (row.confirmationStatus !== 'lab_confirmed') flags.push('lab_pending');
+    if (!row.farmId) flags.push('missing_farm_or_holding');
+    if (!row.block) flags.push('missing_block_or_village');
+    if (Number(row.mortality || 0) > Number(row.n || 0)) flags.push('mortality_exceeds_cases');
+  }
+  const penalty = flags.length * 8 + (flags.includes('mortality_exceeds_cases') ? 10 : 0);
+  const sourceBonus = row.sourceType === 'manual' ? 4 : row.sourceType === 'csv' || row.sourceType === 'csv_browser' ? 0 : -4;
+  return { dataQualityScore: Math.max(0, Math.min(100, 88 - penalty + sourceBonus)), qualityFlags: flags };
+}
+
+function decorateUiReport(row, provenance = {}) {
+  const next = {
+    ...row,
+    sourceType: provenance.sourceType || row.sourceType || 'demo',
+    sourceName: provenance.sourceName || row.sourceName || 'Demo dataset',
+    sourceUploadedBy: provenance.sourceUploadedBy || row.sourceUploadedBy,
+  };
+  const assessed = assessUiQuality(next);
+  return {
+    ...next,
+    dataQualityScore: Number.isFinite(Number(row.dataQualityScore)) ? Number(row.dataQualityScore) : assessed.dataQualityScore,
+    qualityFlags: Array.isArray(row.qualityFlags) ? row.qualityFlags : assessed.qualityFlags,
+  };
+}
+
+function QualityBadge({ score }) {
+  const value = Math.round(Number(score || 0));
+  const color = value >= 85 ? 'text-env border-env' : value >= 70 ? 'text-animal border-animal' : 'text-alert border-alert';
+  return <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${color}`}>{value}/100</span>;
+}
+
+function sourceLabel(row) {
+  const type = row.sourceType || 'unknown';
+  return `${SOURCE_LABELS[type] || type}${row.sourceName ? `: ${row.sourceName}` : ''}`;
+}
+
 function createDemoReports() {
   const rnd = randFactory();
   const reports = [];
   let id = 1;
   const add = (day, loc, sec, dis, n, meta = {}) =>
-    reports.push({
+    reports.push(decorateUiReport({
       id: id++,
       day,
       loc,
@@ -233,7 +295,7 @@ function createDemoReports() {
       n,
       ...(sec === 'animal' ? animalDetails(`${loc}-${dis}-${day}`) : {}),
       ...meta,
-    });
+    }, { sourceType: 'demo', sourceName: 'Built-in demo dataset' }));
 
   for (let day = 29; day >= 0; day -= 1) {
     for (let k = 0; k < 5; k += 1) {
@@ -518,7 +580,7 @@ function parseUploadedCsv(text) {
       skipped += 1;
       return;
     }
-    reports.push({
+    reports.push(decorateUiReport({
       id: index + 1,
       day,
       loc: location,
@@ -534,7 +596,7 @@ function parseUploadedCsv(text) {
       confirmationStatus: normEnum(readCell(row, confirmationIndex), Object.keys(CONFIRMATION_OPTIONS), 'suspected'),
       farmId: cleanOptional(readCell(row, farmIndex)) || undefined,
       block: cleanOptional(readCell(row, blockIndex)) || undefined,
-    });
+    }, { sourceType: 'csv_browser', sourceName: 'Browser CSV upload' }));
   });
 
   if (!reports.length) {
@@ -601,6 +663,7 @@ function Header({ page, setPage, alertCount, live, empty, uploadInfo, auth, onLo
     ['reports', 'Reports'],
     ['alerts', 'Alerts'],
     ['pipeline', 'Data pipeline'],
+    ...(can(auth, 'users:manage') ? [['admin', 'Admin']] : []),
   ];
   const submitLogin = async (event) => {
     event.preventDefault();
@@ -1348,7 +1411,7 @@ function ReportsPage({ reports, setReports, filters, setFilters, live, reload, s
 
     if (!live) {
       setReports((current) => [
-        {
+        decorateUiReport({
           id: Date.now(),
           day: 0,
           loc: body.location,
@@ -1364,7 +1427,7 @@ function ReportsPage({ reports, setReports, filters, setFilters, live, reload, s
           confirmationStatus: body.confirmationStatus,
           farmId: body.farmId,
           block: body.block,
-        },
+        }, { sourceType: 'manual', sourceName: 'Manual report form', sourceUploadedBy: auth?.user?.username || 'demo-user' }),
         ...current,
       ]);
       showToast('Saved in demo mode only');
@@ -1494,7 +1557,7 @@ function ReportsPage({ reports, setReports, filters, setFilters, live, reload, s
         <table className="w-full min-w-[560px] border-collapse">
           <thead>
             <tr>
-              {['Date', 'Sector', 'Disease or signal', 'Location', 'Cases', 'Pashudhan details'].map((head) => (
+              {['Date', 'Sector', 'Disease or signal', 'Location', 'Cases', 'Source', 'Quality', 'Pashudhan details'].map((head) => (
                 <th key={head} className="border-b border-ink p-2 text-left text-[13px] font-medium text-mute">
                   {head}
                 </th>
@@ -1512,12 +1575,16 @@ function ReportsPage({ reports, setReports, filters, setFilters, live, reload, s
                   <td className="border-b border-line p-2.5">{row.dis}</td>
                   <td className="border-b border-line p-2.5">{row.loc}</td>
                   <td className="border-b border-line p-2.5">{row.n}</td>
+                  <td className="border-b border-line p-2.5 text-[13px] text-mute">{sourceLabel(row)}</td>
+                  <td className="border-b border-line p-2.5">
+                    <QualityBadge score={row.dataQualityScore} />
+                  </td>
                   <td className="border-b border-line p-2.5 text-[13px] text-mute">{reportMeta(row) || '-'}</td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan="6" className="p-5 text-mute">
+                <td colSpan="8" className="p-5 text-mute">
                   No reports match these filters.
                 </td>
               </tr>
@@ -1622,6 +1689,21 @@ function AlertsPage({ reports, alerts, activeCity, setActiveCity, auth, onValida
 
 function PipelinePage({ reports, alerts, live, empty, uploadInfo, envByCity, weatherSource }) {
   const locationNames = getReportLocations(reports);
+  const averageQuality = reports.length ? Math.round(reports.reduce((sum, row) => sum + Number(row.dataQualityScore || 0), 0) / reports.length) : 0;
+  const lowQualityCount = reports.filter((row) => Number(row.dataQualityScore || 0) < 75).length;
+  const flagCounts = reports.reduce((counts, row) => {
+    (row.qualityFlags || []).forEach((flag) => {
+      counts[flag] = (counts[flag] || 0) + 1;
+    });
+    return counts;
+  }, {});
+  const provenanceRows = Object.entries(
+    reports.reduce((counts, row) => {
+      const label = row.sourceType || 'unknown';
+      counts[label] = (counts[label] || 0) + 1;
+      return counts;
+    }, {}),
+  );
   const sources = [
     ['Human health', 'Hospital and clinic reports', 'human'],
     ['Animal health', 'Veterinary and livestock reports', 'animal'],
@@ -1662,6 +1744,29 @@ function PipelinePage({ reports, alerts, live, empty, uploadInfo, envByCity, wea
               feed,
               reports.filter((row) => row.sec === sector).length,
               uploadInfo ? 'CSV upload' : live && !empty ? 'Connected' : 'Demo data',
+            ])}
+          />
+
+          <h2 className="mt-7 font-display text-[22px] font-bold">Data quality</h2>
+          <div className="mb-2 text-sm text-mute">Completeness and provenance checks before records are trusted for decisions</div>
+          <DataTable
+            headers={['Check', 'Value', 'Status']}
+            rows={[
+              ['Average quality score', `${averageQuality}/100`, averageQuality >= 80 ? 'Good' : 'Needs review'],
+              ['Low-quality records', lowQualityCount, lowQualityCount ? 'Review before escalation' : 'Clear'],
+              ['Known provenance', reports.filter((row) => row.sourceType && row.sourceName).length, 'Source attached'],
+              ...Object.entries(flagCounts).slice(0, 5).map(([flag, count]) => [QUALITY_LABELS[flag] || flag, count, 'Open']),
+            ]}
+          />
+
+          <h2 className="mt-7 font-display text-[22px] font-bold">Provenance mix</h2>
+          <div className="mb-2 text-sm text-mute">Where the current dashboard records came from</div>
+          <DataTable
+            headers={['Source type', 'Records', 'Trust note']}
+            rows={(provenanceRows.length ? provenanceRows : [['unknown', 0]]).map(([source, count]) => [
+              SOURCE_LABELS[source] || source,
+              count,
+              source === 'manual' ? 'User-entered and audited' : source === 'csv' ? 'Persisted CSV import' : source === 'csv_browser' ? 'Browser-only CSV demo' : 'Sample context',
             ])}
           />
 
@@ -1746,6 +1851,185 @@ function PipelinePage({ reports, alerts, live, empty, uploadInfo, envByCity, wea
               alert.validation.score,
               alert.manualValidation?.status || alert.validation.label,
               RESPONSE_STATUSES[alert.manualValidation?.responseStatus || 'new'],
+            ])}
+          />
+        </section>
+      </div>
+    </>
+  );
+}
+
+function AdminPage({ auth, showToast }) {
+  const [users, setUsers] = useState([]);
+  const [audit, setAudit] = useState([]);
+  const [quality, setQuality] = useState(null);
+  const [form, setForm] = useState({ username: '', password: '', role: 'viewer' });
+  const [busy, setBusy] = useState(false);
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${auth?.token}` };
+
+  const loadAdmin = async () => {
+    if (!can(auth, 'users:manage')) return;
+    try {
+      const [usersResponse, auditResponse, qualityResponse] = await Promise.all([
+        fetch('/api/admin/users', { headers }),
+        fetch('/api/admin/audit?limit=80', { headers }),
+        fetch('/api/admin/quality?limit=500', { headers }),
+      ]);
+      if (!usersResponse.ok || !auditResponse.ok || !qualityResponse.ok) throw new Error('admin load failed');
+      setUsers(await usersResponse.json());
+      setAudit(await auditResponse.json());
+      setQuality(await qualityResponse.json());
+    } catch {
+      showToast('Could not load admin data');
+    }
+  };
+
+  useEffect(() => {
+    loadAdmin();
+  }, [auth?.token]);
+
+  const createUser = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const response = await fetch('/api/admin/users', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(form),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Could not create user');
+      setForm({ username: '', password: '', role: 'viewer' });
+      await loadAdmin();
+      showToast('User created');
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateUser = async (username, patch) => {
+    try {
+      const current = users.find((user) => user.username === username);
+      const response = await fetch(`/api/admin/users/${encodeURIComponent(username)}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ role: current.role, active: current.active, ...patch }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Could not update user');
+      await loadAdmin();
+      showToast('User updated');
+    } catch (err) {
+      showToast(err.message);
+    }
+  };
+
+  if (!can(auth, 'users:manage')) {
+    return <Top title="Admin">Login as admin to manage users, audit logs and data quality.</Top>;
+  }
+
+  const flagRows = Object.entries(quality?.flagCounts || {}).map(([flag, count]) => [QUALITY_LABELS[flag] || flag, count]);
+  const sourceRows = Object.entries(quality?.bySource || {}).map(([source, count]) => [SOURCE_LABELS[source] || source, count]);
+
+  return (
+    <>
+      <Top title="Admin">Manage roles, inspect audit logs and check whether report data is complete enough for field decisions.</Top>
+
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] xl:gap-11">
+        <section>
+          <h2 className="font-display text-[22px] font-bold">Users and roles</h2>
+          <form className="mb-4 grid items-end gap-2.5 rounded-tool border border-line bg-card p-4 sm:grid-cols-4" onSubmit={createUser}>
+            <Label text="Username">
+              <Input value={form.username} onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))} />
+            </Label>
+            <Label text="Password">
+              <Input type="password" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} />
+            </Label>
+            <Label text="Role">
+              <Select value={form.role} onChange={(event) => setForm((current) => ({ ...current, role: event.target.value }))}>
+                {['viewer', 'analyst', 'admin'].map((role) => (
+                  <option key={role}>{role}</option>
+                ))}
+              </Select>
+            </Label>
+            <Button disabled={busy || !form.username || !form.password}>Create user</Button>
+          </form>
+          <DataTable
+            headers={['User', 'Role', 'Active', 'Last login', 'Actions']}
+            rows={users.map((user) => [
+              user.username,
+              <Select
+                key={`${user.username}-role`}
+                value={user.role}
+                onChange={(event) => setUsers((current) => current.map((item) => (item.username === user.username ? { ...item, role: event.target.value } : item)))}
+              >
+                {['viewer', 'analyst', 'admin'].map((role) => (
+                  <option key={role}>{role}</option>
+                ))}
+              </Select>,
+              <label key={`${user.username}-active`} className="inline-flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={Boolean(user.active)}
+                  onChange={(event) => setUsers((current) => current.map((item) => (item.username === user.username ? { ...item, active: event.target.checked } : item)))}
+                />
+                {user.active ? 'Active' : 'Disabled'}
+              </label>,
+              user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString('en-IN') : '-',
+              <Button key={`${user.username}-save`} variant="ghost" className="px-3 py-1.5" onClick={() => updateUser(user.username, {})}>
+                Save
+              </Button>,
+            ])}
+          />
+
+          <h2 className="mt-7 font-display text-[22px] font-bold">Audit trail</h2>
+          <div className="mb-2 text-sm text-mute">Recent privileged actions written by the backend</div>
+          <DataTable
+            headers={['Time', 'Actor', 'Role', 'Action', 'Details']}
+            rows={(audit.length ? audit : [{ at: null, actor: '-', role: '-', action: 'No audit records', details: {} }]).map((log) => [
+              log.at ? new Date(log.at).toLocaleString('en-IN') : '-',
+              log.actor,
+              log.role,
+              log.action,
+              Object.entries(log.details || {}).map(([key, value]) => `${key}: ${value}`).join(', ') || '-',
+            ])}
+          />
+        </section>
+
+        <section>
+          <h2 className="font-display text-[22px] font-bold">Data quality summary</h2>
+          <div className="mb-2 text-sm text-mute">Stored report completeness, provenance and warning flags</div>
+          <div className="mb-5 grid grid-cols-2 gap-3">
+            {[
+              ['Average quality', `${quality?.averageScore || 0}/100`],
+              ['Low-quality reports', quality?.lowQualityReports || 0],
+              ['Missing provenance', quality?.missingProvenance || 0],
+              ['Reports checked', quality?.totalReports || 0],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-tool border border-line bg-card p-4">
+                <span className="text-[13px] text-mute">{label}</span>
+                <b className="block font-display text-[32px] leading-tight">{value}</b>
+              </div>
+            ))}
+          </div>
+          <DataTable headers={['Flag', 'Reports']} rows={flagRows.length ? flagRows : [['No open quality flags', '-']]} />
+
+          <h2 className="mt-7 font-display text-[22px] font-bold">Source mix</h2>
+          <div className="mb-2 text-sm text-mute">How many stored records came from each source type</div>
+          <DataTable headers={['Source', 'Reports']} rows={sourceRows.length ? sourceRows : [['No stored reports', '-']]} />
+
+          <h2 className="mt-7 font-display text-[22px] font-bold">Records to review</h2>
+          <div className="mb-2 text-sm text-mute">Lowest-confidence records with missing context</div>
+          <DataTable
+            headers={['Signal', 'Location', 'Source', 'Quality', 'Flags']}
+            rows={(quality?.samples?.length ? quality.samples : [{ disease: 'No review items', location: '-', sourceType: '-', dataQualityScore: 0, qualityFlags: [] }]).map((sample) => [
+              sample.disease,
+              sample.location,
+              SOURCE_LABELS[sample.sourceType] || sample.sourceType,
+              <QualityBadge key={`${sample.id || sample.disease}-quality`} score={sample.dataQualityScore} />,
+              (sample.qualityFlags || []).map((flag) => QUALITY_LABELS[flag] || flag).join(', ') || '-',
             ])}
           />
         </section>
@@ -1843,6 +2127,7 @@ function App() {
   const logout = () => {
     setAuth(null);
     window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    if (page === 'admin') setPage('dashboard');
     showToast('Signed out');
   };
 
@@ -1980,7 +2265,7 @@ function App() {
         const today = new Date().setHours(0, 0, 0, 0);
         const nextReports = rows.map((row, index) => {
             const coords = getKnownCoords(row.location);
-            return {
+            return decorateUiReport({
               id: rows.length - index,
               day: Math.max(0, Math.round((today - new Date(row.date).setHours(0, 0, 0, 0)) / 864e5)),
               loc: row.location,
@@ -1996,7 +2281,12 @@ function App() {
               confirmationStatus: row.confirmationStatus,
               farmId: row.farmId,
               block: row.block,
-            };
+              sourceType: row.sourceType,
+              sourceName: row.sourceName,
+              sourceUploadedBy: row.sourceUploadedBy,
+              dataQualityScore: row.dataQualityScore,
+              qualityFlags: row.qualityFlags,
+            });
           });
         setReports(nextReports);
         loadServerAlertContext(tokenAtStart);
@@ -2064,7 +2354,7 @@ function App() {
         return;
       }
 
-      setReports(parsed.reports);
+      setReports(parsed.reports.map((row) => decorateUiReport(row, { sourceType: 'csv_browser', sourceName: file.name })));
       setWeatherByCity(ENV);
       setWeatherSource('demo');
       setManualValidations({});
@@ -2131,6 +2421,7 @@ function App() {
       />
     ),
     pipeline: <PipelinePage reports={reports} alerts={alerts} live={live} empty={empty} uploadInfo={uploadInfo} envByCity={weatherByCity} weatherSource={weatherSource} />,
+    admin: <AdminPage auth={auth} showToast={showToast} />,
   }[page];
 
   return (

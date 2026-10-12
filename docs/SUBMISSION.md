@@ -14,8 +14,10 @@ One Health Dashboard brings human, animal and environmental health signals into 
 - CSV upload demo with `data/sample-one-health.csv`, including animal species, mortality, vaccination and lab-status columns
 - Pashudhan report workflow for species, symptoms, farm/block, suspected or lab-confirmed status
 - Field response workflow for alerts: new, investigating, sample collected, contained and resolved
+- Admin workflow for creating users, changing roles, disabling accounts and reading audit logs
+- Data quality/provenance workflow with source mix, quality score, warning flags and records to review
 - Explainable alert page with baseline chart, z-score, ML anomaly score, risk and confidence drivers
-- Data pipeline page showing collect, clean, merge, detect and alert stages
+- Data pipeline page showing collect, clean, merge, detect, validation, quality and provenance stages
 - Demo screenshots saved under `docs/screenshots/`
 
 ## Demo Flow
@@ -26,7 +28,8 @@ One Health Dashboard brings human, animal and environmental health signals into 
 4. Open Alerts and explain the ML anomaly score, z-score and confidence drivers.
 5. Upload `data/sample-one-health.csv` and show the dashboard preserving livestock fields.
 6. On Alerts, mark one alert investigated/sample collected to show field response tracking.
-7. Open Data pipeline and show how reports become alerts.
+7. Login as admin, open Admin, and show users, audit trail and data-quality review.
+8. Open Data pipeline and show how reports become alerts.
 
 ## Verification Commands
 
@@ -48,4 +51,4 @@ npm run screenshots
 
 ## Demo Data Note
 
-Reports can come from MongoDB or from browser CSV upload. Livestock report details are stored/imported when present. Climate readings and livestock corridor volumes are sample context for the demo. Alerts are early-warning signals to investigate, not confirmed outbreak diagnoses.
+Reports can come from MongoDB or from browser CSV upload. Livestock report details, source metadata and quality flags are stored/imported when present. Climate readings and livestock corridor volumes are sample context for the demo. Alerts are early-warning signals to investigate, not confirmed outbreak diagnoses.
