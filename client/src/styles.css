@@ -243,3 +243,33 @@ button { transition: background-color .16s ease, border-color .16s ease, color .
   .app-nav-item { padding-inline: 8px; }
   .connection-status { display: none; }
 }
+
+.climate-table-card {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.climate-toggle {
+  display: block;
+  margin: 16px auto 0;
+  padding: 8px 16px;
+  border: 1px solid color-mix(in srgb, var(--env) 45%, var(--line));
+  border-radius: 999px;
+  color: var(--env);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.climate-toggle:hover {
+  background: color-mix(in srgb, var(--env) 10%, transparent);
+  border-color: var(--env);
+}
+.climate-toggle:focus-visible {
+  outline: 2px solid var(--env);
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .climate-toggle { transition: background-color .16s ease, border-color .16s ease, transform .16s ease; }
+  .climate-toggle:active { transform: translateY(1px); }
+}

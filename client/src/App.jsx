@@ -1689,6 +1689,7 @@ function AlertsPage({ reports, alerts, activeCity, setActiveCity, auth, onValida
 }
 
 function PipelinePage({ reports, alerts, live, empty, uploadInfo, envByCity, weatherSource }) {
+  const [climateExpanded, setClimateExpanded] = useState(false);
   const locationNames = getReportLocations(reports);
   const averageQuality = reports.length ? Math.round(reports.reduce((sum, row) => sum + Number(row.dataQualityScore || 0), 0) / reports.length) : 0;
   const lowQualityCount = reports.filter((row) => Number(row.dataQualityScore || 0) < 75).length;
@@ -1717,6 +1718,18 @@ function PipelinePage({ reports, alerts, live, empty, uploadInfo, envByCity, wea
     ['Detect', alerts.length, `${ML_MODEL.version} model scored city risk`],
     ['Validate', alerts.filter((alert) => alert.validationStatus === 'validated').length, 'alerts with strong evidence'],
   ];
+  const climateRows = locationNames.map((loc) => {
+    const env = envByCity[loc] ?? [0, 0];
+    const flagged = Math.abs(env[0]) >= 3 || Math.abs(env[1]) >= 40;
+    return [
+      loc,
+      `${sign(env[0])} deg C`,
+      `${sign(env[1])}%`,
+      <span key={loc} className={flagged ? 'font-semibold text-alert' : ''}>
+        {flagged ? 'Unusual' : 'Normal'}
+      </span>,
+    ];
+  });
 
   return (
     <>
@@ -1790,25 +1803,18 @@ function PipelinePage({ reports, alerts, live, empty, uploadInfo, envByCity, wea
             })}
           />
 
-          <h2 className="mt-7 font-display text-[22px] font-bold">Climate readings</h2>
-          <div className="mb-2 text-sm text-mute">
-            Difference from the usual for this time of year{weatherSource === 'open-meteo' ? ' from live weather context' : ''}
+          <div className="climate-table-card">
+            <h2 className="font-display text-[22px] font-bold">Climate readings</h2>
+            <div className="mb-2 text-sm text-mute">
+              Difference from the usual for this time of year{weatherSource === 'open-meteo' ? ' from live weather context' : ''}
+            </div>
+            <DataTable headers={['City', 'Temperature', 'Rainfall', 'Flag']} rows={climateExpanded ? climateRows : climateRows.slice(0, 5)} />
+            {climateRows.length > 5 ? (
+              <button className="climate-toggle" type="button" onClick={() => setClimateExpanded((expanded) => !expanded)} aria-expanded={climateExpanded}>
+                {climateExpanded ? 'Show less ↑' : 'Show more ↓'}
+              </button>
+            ) : null}
           </div>
-          <DataTable
-            headers={['City', 'Temperature', 'Rainfall', 'Flag']}
-            rows={locationNames.map((loc) => {
-              const env = envByCity[loc] ?? [0, 0];
-              const flagged = Math.abs(env[0]) >= 3 || Math.abs(env[1]) >= 40;
-              return [
-                loc,
-                `${sign(env[0])} deg C`,
-                `${sign(env[1])}%`,
-                <span key={loc} className={flagged ? 'font-semibold text-alert' : ''}>
-                  {flagged ? 'Unusual' : 'Normal'}
-                </span>,
-              ];
-            })}
-          />
         </section>
 
         <section>
