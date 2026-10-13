@@ -89,8 +89,10 @@ app.post('/api/auth/signup', async (req, res) => {
 
   const username = String(req.body.username || req.body.email || '').trim().toLowerCase();
   const password = String(req.body.password || '');
-  if (!/^[a-z0-9][a-z0-9._-]{2,39}$/.test(username)) {
-    return res.status(400).json({ error: 'Username must be 3–40 characters and use letters, numbers, ., _ or -.' });
+  const validUsername = /^[a-z0-9][a-z0-9._-]{2,39}$/.test(username);
+  const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(username) && username.length <= 254;
+  if (!validUsername && !validEmail) {
+    return res.status(400).json({ error: 'Enter a valid username or email address.' });
   }
   if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
   if (await User.exists({ username })) return res.status(409).json({ error: 'That username is already registered.' });
