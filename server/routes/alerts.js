@@ -37,7 +37,7 @@ const attachManualValidation = async (alerts) => {
 };
 
 // GET /api/alerts
-router.get('/alerts', async (req, res) => res.json(await attachManualValidation(await detect(await last30Days()))));
+router.get('/alerts', requirePermission('alerts:read'), async (req, res) => res.json(await attachManualValidation(await detect(await last30Days()))));
 
 // POST /api/alerts/:location/validate  { status, note? }
 router.post('/alerts/:location/validate', requirePermission('alerts:validate'), async (req, res) => {
@@ -108,7 +108,7 @@ router.get('/ml/model', async (req, res) => {
 });
 
 // GET /api/dashboard/stats
-router.get('/dashboard/stats', async (req, res) => {
+router.get('/dashboard/stats', requirePermission('reports:read'), async (req, res) => {
   const reports = await last30Days();
   const week = { human: 0, animal: 0, environment: 0 };
   const prevWeek = { ...week };

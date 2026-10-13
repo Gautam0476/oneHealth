@@ -4,7 +4,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
 const mongoose = require('mongoose');
-const { authenticateUser, createToken, ensureConfiguredUsers, readAuthUser } = require('./auth');
+const { authenticateUser, createToken, ensureConfiguredUsers, readAuthUser, revokeToken, requirePermission } = require('./auth');
 
 const app = express();
 const allowedOrigins = (process.env.CORS_ORIGIN || '')
@@ -54,20 +54,35 @@ app.use('/api', rateLimit);
 
 app.get('/api/health', (req, res) => res.json({ ok: true, database: mongoose.connection.readyState === 1 }));
 app.post('/api/auth/login', async (req, res) => {
+  const hasConfiguredFallbackUsers = Boolean(
+    process.env.AUTH_USERS
+      || process.env.ADMIN_PASSWORD
+      || process.env.ANALYST_PASSWORD
+      || process.env.VIEWER_PASSWORD
+      || process.env.ADMIN_TOKEN,
+  );
+  if (mongoose.connection.readyState !== 1 && !hasConfiguredFallbackUsers) {
+    return res.status(503).json({ error: 'Authentication service unavailable. Configure MongoDB or explicit auth users.' });
+  }
   const user = await authenticateUser(String(req.body.username || '').trim(), String(req.body.password || ''), req);
   if (!user) return res.status(401).json({ error: 'Invalid username or password' });
   return res.json({ user, token: createToken(user) });
+});
+app.post('/api/auth/logout', (req, res) => {
+  const token = req.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
+  revokeToken(token);
+  return res.status(204).end();
 });
 app.get('/api/auth/me', (req, res) => {
   const user = readAuthUser(req);
   if (!user) return res.status(401).json({ error: 'Login required' });
   return res.json({ user });
 });
-app.get('/api/ml/model', async (req, res) => {
+app.get('/api/ml/model', requirePermission('reports:read'), async (req, res) => {
   const engine = await import('../shared/anomalyEngine.mjs');
   res.json(engine.ML_MODEL);
 });
-app.use('/api/context', require('./routes/context'));
+app.use('/api/context', requirePermission('reports:read'), require('./routes/context'));
 
 // If MongoDB is not connected, answer fast so the dashboard can fall back to demo data
 app.use('/api', (req, res, next) => req.path.startsWith('/auth/')

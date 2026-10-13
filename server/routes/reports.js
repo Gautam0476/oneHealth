@@ -52,7 +52,7 @@ const cleanDate = (value) => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 // GET /api/reports?sector=human&location=Jaipur&limit=50
-router.get('/', async (req, res) => {
+router.get('/', requirePermission('reports:read'), async (req, res) => {
   try {
     const sector = cleanText(req.query.sector);
     const location = cleanText(req.query.location);

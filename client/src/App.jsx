@@ -645,6 +645,53 @@ function CsvUploadButton({ onUpload }) {
   );
 }
 
+function LoginPage({ onLogin, error, loading }) {
+  const [form, setForm] = useState({ username: '', password: '' });
+  const [showPassword, setShowPassword] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await onLogin(form.username, form.password);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="login-page">
+      <section className="login-card" aria-labelledby="login-title">
+        <div className="login-brand"><span className="brand-mark" aria-hidden="true"><i /><i /><i /><i /></span> OneHealth</div>
+        <div className="eyebrow">HEALTH INTELLIGENCE PLATFORM</div>
+        <h1 id="login-title">Sign in to your workspace</h1>
+        <p className="login-description">Monitor outbreaks, climate signals, and response activity in one secure view.</p>
+        <form className="login-form" onSubmit={submit}>
+          <label>
+            Username or email
+            <input autoComplete="username" value={form.username} onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))} required />
+          </label>
+          <label>
+            Password
+            <span className="password-field">
+              <input autoComplete="current-password" type={showPassword ? 'text' : 'password'} value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} required />
+              <button type="button" className="password-toggle" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                {showPassword ? 'Hide' : 'Show'}
+              </button>
+            </span>
+          </label>
+          {error ? <p className="login-error" role="alert">{error}</p> : null}
+          <button className="login-submit" type="submit" disabled={loading || busy || !form.username || !form.password}>
+            {loading || busy ? 'Signing in…' : 'Login'}
+          </button>
+        </form>
+        <p className="login-footer">Authorized users only · OneHealth operations console</p>
+      </section>
+    </main>
+  );
+}
+
 function Tag({ sector }) {
   return (
     <span className="inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold text-white" style={{ background: COLORS[sector] }}>
@@ -2088,13 +2135,9 @@ function App() {
   const [uploadInfo, setUploadInfo] = useState(null);
   const [weatherByCity, setWeatherByCity] = useState(ENV);
   const [weatherSource, setWeatherSource] = useState('demo');
-  const [auth, setAuth] = useState(() => {
-    try {
-      return JSON.parse(window.localStorage.getItem(AUTH_STORAGE_KEY) || 'null');
-    } catch {
-      return null;
-    }
-  });
+  const [auth, setAuth] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState('');
   const [manualValidations, setManualValidations] = useState({});
   const csvUploadToken = useRef(0);
   const rawAlerts = useMemo(() => computeAlerts(reports, weatherByCity), [reports, weatherByCity]);
@@ -2113,6 +2156,7 @@ function App() {
   };
 
   const login = async (username, password) => {
+    setAuthError('');
     try {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
@@ -2123,24 +2167,28 @@ function App() {
       const nextAuth = await response.json();
       setAuth(nextAuth);
       window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextAuth));
-      showToast(`Logged in as ${nextAuth.user.role}`);
       return true;
-    } catch {
-      showToast('Login failed');
+    } catch (error) {
+      setAuthError(error.message === 'login failed' ? 'Invalid username or password.' : 'Unable to reach the authentication service. Please try again.');
       return false;
     }
   };
 
   const logout = () => {
+    const token = auth?.token;
     setAuth(null);
     window.localStorage.removeItem(AUTH_STORAGE_KEY);
     if (page === 'admin') setPage('dashboard');
-    showToast('Signed out');
+    if (token) fetch('/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
   };
 
   const loadServerAlertContext = async (tokenAtStart) => {
     try {
-      const response = await fetch('/api/alerts');
+      const response = await fetch('/api/alerts', { headers: { Authorization: `Bearer ${auth?.token}` } });
+      if (response.status === 401) {
+        logout();
+        return;
+      }
       if (!response.ok || tokenAtStart !== csvUploadToken.current) return;
       const serverAlerts = await response.json();
       const nextValidations = Object.fromEntries(
@@ -2168,7 +2216,11 @@ function App() {
     if (!points) return;
 
     try {
-      const response = await fetch(`/api/context/weather?points=${points}`);
+      const response = await fetch(`/api/context/weather?points=${points}`, { headers: { Authorization: `Bearer ${auth?.token}` } });
+      if (response.status === 401) {
+        logout();
+        return;
+      }
       if (!response.ok || tokenAtStart !== csvUploadToken.current) return;
       const payload = await response.json();
       const liveReadings = (payload.readings || []).filter((item) => item.source === 'open-meteo');
@@ -2260,7 +2312,11 @@ function App() {
     const timeout = window.setTimeout(() => controller.abort(), 4000);
 
     try {
-      const response = await fetch('/api/reports?limit=500', { signal: controller.signal });
+      const response = await fetch('/api/reports?limit=500', { signal: controller.signal, headers: { Authorization: `Bearer ${auth?.token}` } });
+      if (response.status === 401) {
+        logout();
+        return;
+      }
       if (!response.ok) throw new Error('bad status');
       const rows = await response.json();
       if (tokenAtStart !== csvUploadToken.current) return;
@@ -2378,8 +2434,48 @@ function App() {
   };
 
   useEffect(() => {
-    loadReports(true);
+    let active = true;
+    const stored = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!stored) {
+      setAuthLoading(false);
+      return () => { active = false; };
+    }
+
+    let saved;
+    try {
+      saved = JSON.parse(stored);
+    } catch {
+      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+      setAuthLoading(false);
+      return () => { active = false; };
+    }
+
+    if (!saved?.token) {
+      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+      setAuthLoading(false);
+      return () => { active = false; };
+    }
+
+    fetch('/api/auth/me', { headers: { Authorization: `Bearer ${saved.token}` } })
+      .then((response) => {
+        if (!response.ok) throw new Error('session expired');
+        return response.json();
+      })
+      .then((payload) => {
+        if (active) setAuth({ token: saved.token, user: payload.user });
+      })
+      .catch(() => {
+        window.localStorage.removeItem(AUTH_STORAGE_KEY);
+        if (active) setAuth(null);
+      })
+      .finally(() => { if (active) setAuthLoading(false); });
+
+    return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (auth) loadReports(true);
+  }, [auth]);
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -2430,6 +2526,14 @@ function App() {
     pipeline: <PipelinePage reports={reports} alerts={alerts} live={live} empty={empty} uploadInfo={uploadInfo} envByCity={weatherByCity} weatherSource={weatherSource} />,
     admin: <AdminPage auth={auth} showToast={showToast} />,
   }[page];
+
+  if (authLoading) {
+    return <main className="login-page"><div className="login-loading">Checking your secure session…</div></main>;
+  }
+
+  if (!auth) {
+    return <LoginPage onLogin={login} error={authError} loading={false} />;
+  }
 
   return (
     <>

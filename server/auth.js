@@ -10,6 +10,7 @@ const ROLE_PERMISSIONS = {
 };
 
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
+const revokedTokens = new Set();
 const getSecret = () => process.env.AUTH_SECRET || process.env.ADMIN_TOKEN || 'one-health-demo-secret';
 
 const safeEqual = (left, right) => {
@@ -101,6 +102,7 @@ function createToken(user) {
 
 function verifyToken(token) {
   if (!token || !token.includes('.')) return null;
+  if (revokedTokens.has(token)) return null;
   const [payload, signature] = token.split('.');
   if (!signature || !safeEqual(sign(payload), signature)) return null;
 
@@ -111,6 +113,10 @@ function verifyToken(token) {
   } catch {
     return null;
   }
+}
+
+function revokeToken(token) {
+  if (token) revokedTokens.add(token);
 }
 
 function readAuthUser(req) {
@@ -140,6 +146,7 @@ module.exports = {
   ROLE_PERMISSIONS,
   authenticateUser,
   createToken,
+  revokeToken,
   ensureConfiguredUsers,
   readAuthUser,
   requirePermission,
