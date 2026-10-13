@@ -655,6 +655,7 @@ function Tag({ sector }) {
 
 function Header({ page, setPage, alertCount, live, empty, uploadInfo, auth, onLogin, onLogout }) {
   const [loginOpen, setLoginOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [busy, setBusy] = useState(false);
   const liveText = uploadInfo ? 'CSV live feed' : live ? (empty ? 'Database empty, showing demo data' : 'Connected to database') : 'Demo data';
@@ -665,6 +666,10 @@ function Header({ page, setPage, alertCount, live, empty, uploadInfo, auth, onLo
     ['pipeline', 'Data pipeline'],
     ...(can(auth, 'users:manage') ? [['admin', 'Admin']] : []),
   ];
+  const navGroups = [
+    { label: 'Workspace', items: items.slice(0, 3) },
+    { label: 'Operations', items: items.slice(3) },
+  ].filter((group) => group.items.length);
   const submitLogin = async (event) => {
     event.preventDefault();
     setBusy(true);
@@ -674,41 +679,36 @@ function Header({ page, setPage, alertCount, live, empty, uploadInfo, auth, onLo
   };
 
   return (
-    <header className="relative flex flex-wrap items-center gap-4 border-b border-line px-4 py-3.5 sm:px-8 lg:flex-nowrap lg:gap-7 lg:px-11">
-      <div className="flex items-center gap-2.5 font-display text-[22px] font-extrabold text-ink">
-        <span className="grid size-5 grid-cols-2 gap-0.5">
-          <span className="rounded-full bg-human" />
-          <span className="rounded-full bg-animal" />
-          <span className="rounded-full bg-env" />
-          <span className="rounded-full bg-alert" />
-        </span>
-        OneHealth
+    <header className="app-header">
+      <div className="brand-lockup">
+        <span className="brand-mark" aria-hidden="true"><i /><i /><i /><i /></span>
+        <span>OneHealth</span>
+        <span className="brand-caption">Intelligence</span>
       </div>
-
-      <nav className="hide-scrollbar order-3 flex w-full min-w-0 gap-1 overflow-x-auto lg:order-none lg:w-auto lg:flex-1">
-        {items.map(([key, label]) => (
-          <button
-            key={key}
-            className={`flex cursor-pointer items-center gap-2 whitespace-nowrap border-b-2 px-3.5 py-2 font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-env ${
-              page === key ? 'border-ink text-ink' : 'border-transparent text-mute hover:text-ink'
-            }`}
-            aria-current={page === key ? 'page' : undefined}
-            onClick={() => setPage(key)}
-          >
-            {label}
-            {key === 'alerts' && alertCount > 0 ? (
-              <span className="rounded-full bg-alert px-2 text-xs font-semibold text-white">{alertCount}</span>
-            ) : null}
-          </button>
+      <button className="mobile-nav-toggle" type="button" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((open) => !open)}>
+        <span className="sr-only">Toggle navigation</span>☰
+      </button>
+      <nav className={`app-nav ${mobileNavOpen ? 'is-open' : ''}`} aria-label="Primary navigation">
+        {navGroups.map((group) => (
+          <div className="nav-group" key={group.label}>
+            <span className="nav-group-label">{group.label}</span>
+            {group.items.map(([key, label]) => (
+              <button key={key} className={`app-nav-item ${page === key ? 'is-active' : ''}`} aria-current={page === key ? 'page' : undefined} onClick={() => { setPage(key); setMobileNavOpen(false); }}>
+                <span className="nav-icon" aria-hidden="true">{key === 'dashboard' ? '⌂' : key === 'reports' ? '▤' : key === 'alerts' ? '!' : key === 'pipeline' ? '⌁' : '⚙'}</span>
+                {label}
+                {key === 'alerts' && alertCount > 0 ? <span className="nav-count">{alertCount}</span> : null}
+              </button>
+            ))}
+          </div>
         ))}
       </nav>
 
-      <div className="ml-auto hidden shrink-0 items-center gap-2 text-sm text-mute md:flex lg:ml-0">
-        <span className="live-dot size-2 rounded-full bg-env" />
-        {liveText}
+      <div className="connection-status">
+        <span className="live-dot" />
+        <span>{liveText}</span>
       </div>
 
-      <div className="relative ml-auto flex shrink-0 items-center gap-2 lg:ml-0">
+      <div className="account-area">
         {auth ? (
           <>
             <span className="rounded-full border border-line px-3 py-1 text-xs font-semibold uppercase text-mute">
@@ -761,14 +761,15 @@ function Header({ page, setPage, alertCount, live, empty, uploadInfo, auth, onLo
 
 function Top({ title, children, action }) {
   return (
-    <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+    <div className="page-header">
       <div>
-        <h1 className="max-w-[22ch] font-display text-[30px] font-extrabold leading-none text-ink sm:text-5xl lg:text-[52px]">
+        <div className="eyebrow">ONEHEALTH MONITORING</div>
+        <h1 className="page-title">
           {title}
         </h1>
-        {children ? <p className="mt-2 max-w-[60ch] text-mute">{children}</p> : null}
+        {children ? <p className="page-description">{children}</p> : null}
       </div>
-      {action}
+      {action ? <div className="page-actions">{action}</div> : null}
     </div>
   );
 }
@@ -2437,7 +2438,7 @@ function App() {
         onLogin={login}
         onLogout={logout}
       />
-      <main className="mx-auto max-w-[1500px] px-4 py-7 pb-16 sm:px-8 lg:px-11">{content}</main>
+      <main className="app-main">{content}</main>
       {toast ? (
         <div className="fixed bottom-5 left-1/2 max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-[22px] bg-ink px-[18px] py-2.5 text-center font-semibold text-bg shadow-soft">
           {toast}
