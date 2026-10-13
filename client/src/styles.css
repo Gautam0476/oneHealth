@@ -219,3 +219,27 @@ button { transition: background-color .16s ease, border-color .16s ease, color .
   .page-header { align-items: flex-start; flex-direction: column; margin-bottom: 22px; } .page-actions { justify-content: flex-start; width: 100%; }
   .page-title { font-size: 30px; } .app-main section:has(> h2) { padding: 16px; }
 }
+
+/* Dark theme contrast: keep the dashboard surfaces deep, but make hierarchy readable. */
+@media (prefers-color-scheme: dark) {
+  .app-header { background: rgba(13, 29, 43, .97); border-bottom-color: #263d4e; box-shadow: 0 2px 14px rgba(0,0,0,.18); }
+  .brand-lockup, .app-nav-item.is-active, .app-nav-item:hover { color: #e8f2f5; }
+  .app-nav-item:hover { background: #183243; }
+  .app-nav-item.is-active { background: #123b3d; border-color: #226b68; }
+  .nav-group-label { color: #91a9b8; }
+  .app-main section:has(> h2) { background: var(--card); border-color: #263d4e; }
+  .app-main section:has(> h2) > h2, .page-title { color: #e8f2f5; }
+  .app-main table thead th { background: #172a39; color: #b8cbd5; }
+  .app-main table tbody tr:hover { background: #162f3d; }
+  .app-main .rounded-tool { border-color: #263d4e; }
+  .app-main input, .app-main select { background: #101c29; color: #e8eef5; }
+  .mobile-nav-toggle { color: #e8f2f5; }
+}
+
+@media (min-width: 901px) and (max-width: 1180px) {
+  .app-header { gap: 14px; padding-inline: 22px; }
+  .brand-lockup { min-width: 190px; }
+  .app-nav { gap: 10px; }
+  .app-nav-item { padding-inline: 8px; }
+  .connection-status { display: none; }
+}
