@@ -645,16 +645,24 @@ function CsvUploadButton({ onUpload }) {
   );
 }
 
-function LoginPage({ onLogin, error, loading }) {
+function LoginPage({ onLogin, onSignup, error, loading }) {
+  const [mode, setMode] = useState('login');
   const [form, setForm] = useState({ username: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
 
   const submit = async (event) => {
     event.preventDefault();
+    setNotice('');
     setBusy(true);
     try {
-      await onLogin(form.username, form.password);
+      const ok = mode === 'login' ? await onLogin(form.username, form.password) : await onSignup(form.username, form.password);
+      if (ok && mode === 'signup') {
+        setMode('login');
+        setForm((current) => ({ ...current, password: '' }));
+        setNotice('Account created. You can now sign in.');
+      }
     } finally {
       setBusy(false);
     }
@@ -665,8 +673,8 @@ function LoginPage({ onLogin, error, loading }) {
       <section className="login-card" aria-labelledby="login-title">
         <div className="login-brand"><span className="brand-mark" aria-hidden="true"><i /><i /><i /><i /></span> OneHealth</div>
         <div className="eyebrow">HEALTH INTELLIGENCE PLATFORM</div>
-        <h1 id="login-title">Sign in to your workspace</h1>
-        <p className="login-description">Monitor outbreaks, climate signals, and response activity in one secure view.</p>
+        <h1 id="login-title">{mode === 'login' ? 'Sign in to your workspace' : 'Create your workspace account'}</h1>
+        <p className="login-description">{mode === 'login' ? 'Monitor outbreaks, climate signals, and response activity in one secure view.' : 'Create a secure viewer account to access the OneHealth monitoring workspace.'}</p>
         <form className="login-form" onSubmit={submit}>
           <label>
             Username or email
@@ -681,12 +689,19 @@ function LoginPage({ onLogin, error, loading }) {
               </button>
             </span>
           </label>
+          {mode === 'signup' ? <p className="login-hint">New accounts start with Viewer access. An administrator can update roles later.</p> : null}
+          {notice ? <p className="login-success" role="status">{notice}</p> : null}
           {error ? <p className="login-error" role="alert">{error}</p> : null}
           <button className="login-submit" type="submit" disabled={loading || busy || !form.username || !form.password}>
-            {loading || busy ? 'Signing in…' : 'Login'}
+            {loading || busy ? (mode === 'login' ? 'Signing in…' : 'Creating account…') : mode === 'login' ? 'Login' : 'Create account'}
           </button>
         </form>
-        <p className="login-footer">Authorized users only · OneHealth operations console</p>
+        <p className="login-footer">
+          {mode === 'login' ? 'Need an account?' : 'Already have an account?'}{' '}
+          <button type="button" className="login-link" onClick={() => { setMode((current) => current === 'login' ? 'signup' : 'login'); setNotice(''); }}>
+            {mode === 'login' ? 'Sign up' : 'Back to login'}
+          </button>
+        </p>
       </section>
     </main>
   );
@@ -2163,13 +2178,33 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       });
-      if (!response.ok) throw new Error('login failed');
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(response.status === 503 ? payload.error || 'Authentication service unavailable.' : 'login failed');
+      }
       const nextAuth = await response.json();
       setAuth(nextAuth);
       window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextAuth));
       return true;
     } catch (error) {
-      setAuthError(error.message === 'login failed' ? 'Invalid username or password.' : 'Unable to reach the authentication service. Please try again.');
+      setAuthError(error.message === 'login failed' ? 'Invalid username or password.' : error.message || 'Unable to reach the authentication service. Please try again.');
+      return false;
+    }
+  };
+
+  const signup = async (username, password) => {
+    setAuthError('');
+    try {
+      const response = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Could not create this account.');
+      return true;
+    } catch (error) {
+      setAuthError(error.message || 'Could not create this account.');
       return false;
     }
   };
@@ -2532,7 +2567,7 @@ function App() {
   }
 
   if (!auth) {
-    return <LoginPage onLogin={login} error={authError} loading={false} />;
+    return <LoginPage onLogin={login} onSignup={signup} error={authError} loading={false} />;
   }
 
   return (

@@ -301,11 +301,15 @@ button { transition: background-color .16s ease, border-color .16s ease, color .
 .password-toggle { position: absolute; top: 50%; right: 10px; transform: translateY(-50%); border: 0; color: var(--env); background: transparent; font-size: 12px; font-weight: 800; cursor: pointer; }
 .password-toggle:focus-visible { outline: 2px solid var(--env); outline-offset: 2px; border-radius: 3px; }
 .login-error { margin: -3px 0 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--alert) 35%, var(--line)); border-radius: 8px; color: var(--alert); background: color-mix(in srgb, var(--alert) 8%, transparent); font-size: 13px; }
+.login-success { margin: -3px 0 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--env) 35%, var(--line)); border-radius: 8px; color: var(--env); background: color-mix(in srgb, var(--env) 8%, transparent); font-size: 13px; }
+.login-hint { margin: -4px 0 0; color: var(--mute); font-size: 12px; line-height: 1.5; }
 .login-submit { min-height: 44px; margin-top: 4px; border: 1px solid var(--navy); border-radius: 9px; color: #fff; background: var(--navy); font-weight: 800; cursor: pointer; }
 .login-submit:hover { background: var(--env); border-color: var(--env); }
 .login-submit:focus-visible { outline: 2px solid var(--env); outline-offset: 3px; }
 .login-submit:disabled { cursor: wait; opacity: .65; }
 .login-footer { margin: 26px 0 0; color: var(--mute); font-size: 11px; text-align: center; }
+.login-link { border: 0; padding: 0; color: var(--env); background: transparent; font-size: inherit; font-weight: 800; cursor: pointer; }
+.login-link:hover { text-decoration: underline; }
 .login-loading { color: var(--mute); font-size: 14px; }
 @media (prefers-color-scheme: dark) {
   .login-card { border-color: #263d4e; box-shadow: 0 22px 55px rgba(0,0,0,.25); }

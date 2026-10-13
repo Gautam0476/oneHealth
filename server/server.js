@@ -4,7 +4,8 @@ const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
 const mongoose = require('mongoose');
-const { authenticateUser, createToken, ensureConfiguredUsers, readAuthUser, revokeToken, requirePermission } = require('./auth');
+const User = require('./models/User');
+const { ROLE_PERMISSIONS, authenticateUser, createToken, ensureConfiguredUsers, readAuthUser, revokeToken, requirePermission } = require('./auth');
 
 const app = express();
 const allowedOrigins = (process.env.CORS_ORIGIN || '')
@@ -67,6 +68,29 @@ app.post('/api/auth/login', async (req, res) => {
   const user = await authenticateUser(String(req.body.username || '').trim(), String(req.body.password || ''), req);
   if (!user) return res.status(401).json({ error: 'Invalid username or password' });
   return res.json({ user, token: createToken(user) });
+});
+app.post('/api/auth/signup', async (req, res) => {
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ error: 'Signup is unavailable until the authentication database is connected.' });
+  }
+
+  const username = String(req.body.username || req.body.email || '').trim().toLowerCase();
+  const password = String(req.body.password || '');
+  if (!/^[a-z0-9][a-z0-9._-]{2,39}$/.test(username)) {
+    return res.status(400).json({ error: 'Username must be 3–40 characters and use letters, numbers, ., _ or -.' });
+  }
+  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  if (await User.exists({ username })) return res.status(409).json({ error: 'That username is already registered.' });
+
+  try {
+    const user = new User({ username, role: 'viewer', active: true });
+    user.setPassword(password);
+    await user.save();
+    return res.status(201).json({ user: { username, role: 'viewer', permissions: ROLE_PERMISSIONS.viewer } });
+  } catch (error) {
+    if (error?.code === 11000) return res.status(409).json({ error: 'That username is already registered.' });
+    return res.status(400).json({ error: 'Could not create this account.' });
+  }
 });
 app.post('/api/auth/logout', (req, res) => {
   const token = req.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
