@@ -7,6 +7,9 @@ const mongoose = require('mongoose');
 const User = require('./models/User');
 const { ROLE_PERMISSIONS, authenticateUser, createToken, ensureConfiguredUsers, readAuthUser, revokeToken, requirePermission } = require('./auth');
 
+const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI;
+let databaseReady = Promise.resolve(false);
+
 const app = express();
 const allowedOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
@@ -53,7 +56,12 @@ app.use(cors({
 app.use(express.json({ limit: '100kb' }));
 app.use('/api', rateLimit);
 
-app.get('/api/health', (req, res) => res.json({ ok: true, database: mongoose.connection.readyState === 1 }));
+app.get('/api/health', (req, res) => res.json({
+  ok: true,
+  database: mongoose.connection.readyState === 1,
+  databaseConfigured: Boolean(mongoUri),
+  databaseState: mongoose.connection.readyState,
+}));
 app.post('/api/auth/login', async (req, res) => {
   const hasConfiguredFallbackUsers = Boolean(
     process.env.AUTH_USERS
@@ -70,6 +78,11 @@ app.post('/api/auth/login', async (req, res) => {
   return res.json({ user, token: createToken(user) });
 });
 app.post('/api/auth/signup', async (req, res) => {
+  try {
+    await databaseReady;
+  } catch {
+    // The connection attempt is logged at startup; keep credentials and URI details out of the response.
+  }
   if (mongoose.connection.readyState !== 1) {
     return res.status(503).json({ error: 'Signup is unavailable until the authentication database is connected.' });
   }
@@ -89,6 +102,7 @@ app.post('/api/auth/signup', async (req, res) => {
     return res.status(201).json({ user: { username, role: 'viewer', permissions: ROLE_PERMISSIONS.viewer } });
   } catch (error) {
     if (error?.code === 11000) return res.status(409).json({ error: 'That username is already registered.' });
+    console.error('Signup database operation failed:', error.message);
     return res.status(400).json({ error: 'Could not create this account.' });
   }
 });
@@ -128,14 +142,29 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
 
-if (process.env.MONGO_URI) {
-  Promise.resolve().then(() => mongoose.connect(process.env.MONGO_URI))
+const connectDatabase = async () => {
+  if (!mongoUri) {
+    console.warn('MongoDB is not configured: set MONGO_URI in the server environment. Database-backed signup and persistence are unavailable.');
+    return false;
+  }
+
+  const timeout = Number(process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS || 10000);
+  mongoose.connection.on('connected', () => console.log('MongoDB connected'));
+  mongoose.connection.on('disconnected', () => console.warn('MongoDB disconnected'));
+  mongoose.connection.on('error', (error) => console.error('MongoDB connection error:', error.message));
+
+  return mongoose.connect(mongoUri, {
+    serverSelectionTimeoutMS: Number.isFinite(timeout) ? Math.max(1000, Math.min(timeout, 30000)) : 10000,
+  })
     .then(async () => {
-      console.log('MongoDB connected');
       await ensureConfiguredUsers();
       console.log('Auth users ready');
+      return true;
     })
-    .catch(err => console.error('MongoDB not connected (dashboard will show demo data):', err.message));
-} else {
-  console.warn('MONGO_URI is not set. Dashboard will use demo data until a database is configured.');
-}
+    .catch((error) => {
+      console.error('MongoDB connection failed; database-backed signup and persistence are unavailable:', error.message);
+      return false;
+    });
+};
+
+databaseReady = connectDatabase();

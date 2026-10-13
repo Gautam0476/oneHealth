@@ -26,6 +26,7 @@ Environment variables:
 | Variable | Required | Notes |
 |---|---:|---|
 | `MONGO_URI` | Yes | MongoDB connection string |
+| `MONGO_SERVER_SELECTION_TIMEOUT_MS` | No | MongoDB connection wait timeout in milliseconds; defaults to `10000` |
 | `PORT` | No | Hosting providers often inject this |
 | `CORS_ORIGIN` | Recommended | Public frontend URL, for example `https://onehealth.example.com` |
 | `RATE_LIMIT_MAX` | No | Defaults to `300` API requests per IP every 15 minutes |
@@ -72,13 +73,13 @@ After deploy, check:
 
 ```bash
 curl https://YOUR_DEPLOYED_URL/api/health
-curl https://YOUR_DEPLOYED_URL/api/alerts
 ```
 
 Expected:
 
 - `/api/health` returns `{ "ok": true, "database": true }` when MongoDB is connected.
-- `/api/alerts` returns an array. It can be empty when no city crosses the alert rules.
+- `/api/health` also reports `databaseConfigured` and a numeric `databaseState`; signup requires `database: true`.
+- Protected data endpoints require a valid bearer token.
 - The top-right dashboard label should say `Connected to database`; if it says `Demo data`, check `MONGO_URI` and deployment logs.
 
 ## Demo Data
